@@ -457,6 +457,11 @@ prohibidos = [
   "scripts/commits*.py",
   "scripts/agente/cerrar*.sh",
   "scripts/agente/publicar_registro.sh",
+  # Llevan compuertas de fidelidad además de orquestación.
+  "scripts/agente/reparar.sh",
+  "scripts/agente/expandir.sh",
+  "scripts/agente/impacto.sh",
+  "scripts/agente/revision*.sh",
   "scripts/agente/compuertas_reparar.py",
   "scripts/agente/proxy_mx.py",
 ]

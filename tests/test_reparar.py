@@ -328,7 +328,7 @@ def test_el_job_de_compuertas_de_punta_a_punta(tmp_path, afectado, cadenas):
     # Otra entrega: toca el extractor y borra un script. No pasa, y lo dice.
     despues2 = clon_de(afectado, tmp_path / "despues2")
     tar_con(tmp_path / "entrega.tar", [(VLE, DESPUES), ("extractor/__init__.py", "x = 1\n")])
-    (tmp_path / "borrados.txt").write_text("scripts/agente/reparar.sh\n")
+    (tmp_path / "borrados.txt").write_text("scripts/lanzar_vigilancia_estatal.sh\n")
     args.despues, args.trabajo = str(despues2), str(tmp_path / "t2")
     assert reparar.correr_compuertas(args, cadenas) == 0
     informe = json.loads((tmp_path / "t2" / "compuertas.json").read_text())

@@ -26,6 +26,7 @@ REPO = {
                                         "    timeout-minutes: 5\n    steps:\n      - run: echo validar\n",
     "scripts/lanzar_vigilancia_estatal.sh": "#!/usr/bin/env bash\nset -euo pipefail\ngh workflow run vigilar-leyes-estatales.yml\n",
     "scripts/agente/reparar.sh": "#!/usr/bin/env bash\nset -uo pipefail\necho reparar\n",
+    "scripts/agente/correr.sh": "#!/usr/bin/env bash\nset -uo pipefail\necho correr\n",
     "scripts/agente/cerrar.sh": "#!/usr/bin/env bash\necho cerrar\n",
     "extractor/__init__.py": "",
     "tests/test_parse.py": "def test_parse():\n    assert True\n",
@@ -177,8 +178,8 @@ def test_no_toca_una_prueba_existente(juzgar):
 
 def test_no_borra_ni_crea_otra_cosa_que_pruebas(juzgar):
     r = juzgar({VLE: DESPUES, "scripts/lanzar_otra.sh": "echo hola\n", "tests/test_infra_lanzador.py": "def test_x():\n    assert True\n"},
-               borrar=("scripts/agente/reparar.sh",))
-    assert any("scripts/agente/reparar.sh: borra un archivo" in d for d in r.de("alcance"))
+               borrar=("scripts/agente/correr.sh",))
+    assert any("scripts/agente/correr.sh: borra un archivo" in d for d in r.de("alcance"))
     assert any("scripts/lanzar_otra.sh: lo único que se puede crear son pruebas" in d for d in r.de("alcance"))
     assert not any("test_infra_lanzador" in d for d in r.de("alcance") + r.de("contenido"))
 
@@ -192,12 +193,12 @@ def test_no_excede_el_tope_de_lineas_ni_de_archivos(juzgar):
 
 
 def test_el_parche_tiene_que_tocar_el_archivo_de_la_huella(juzgar):
-    r = juzgar({"scripts/agente/reparar.sh": "#!/usr/bin/env bash\nset -uo pipefail\necho reparar otra vez\n"})
+    r = juzgar({"scripts/agente/correr.sh": "#!/usr/bin/env bash\nset -uo pipefail\necho reparar otra vez\n"})
     assert any("no toca .github/workflows/vigilar-leyes-estatales.yml ni un archivo que el paso de la huella invoque" in d
                for d in r.de("contenido"))
     # Y con el archivo de la huella, lo demás tiene que ser de ese paso.
-    r = juzgar({VLE: DESPUES, "scripts/agente/reparar.sh": "#!/usr/bin/env bash\nset -uo pipefail\necho reparar otra vez\n"})
-    assert any("scripts/agente/reparar.sh: ni es el archivo del paso de la huella ni lo invoca ese paso" in d
+    r = juzgar({VLE: DESPUES, "scripts/agente/correr.sh": "#!/usr/bin/env bash\nset -uo pipefail\necho reparar otra vez\n"})
+    assert any("scripts/agente/correr.sh: ni es el archivo del paso de la huella ni lo invoca ese paso" in d
                for d in r.de("contenido"))
 
 
