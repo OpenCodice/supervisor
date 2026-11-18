@@ -10,7 +10,8 @@ run-name: "supervisor origen=[${{ inputs.origen }}]"
 #
 # Con el secret SUPERVISOR_TOKEN actúa; sin él corre en modo informe con el
 # token del job (los repos son públicos: lectura sin más) y solo escribe
-# estado/ y el resumen.
+# estado/ y el resumen. La variable de repo SUPERVISOR_MODO=informe lo deja en
+# informe aunque tenga el token.
 on:
   workflow_dispatch:
     inputs:
@@ -36,6 +37,7 @@ jobs:
     timeout-minutes: 10
     env:
       ACTUA: ${{ secrets.SUPERVISOR_TOKEN != '' }}
+      MODO: ${{ vars.SUPERVISOR_MODO }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
@@ -52,7 +54,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.SUPERVISOR_TOKEN || github.token }}
         run: |
           modo=informe
-          if [ "$ACTUA" = true ]; then modo=actuar; fi
+          if [ "$ACTUA" = true ] && [ "$MODO" != informe ]; then modo=actuar; fi
           python -m supervisor correr --modo "$modo" --cache .cache/fotos
           find .cache/fotos -type f -mtime +12 -delete
       - name: Guardar el estado
