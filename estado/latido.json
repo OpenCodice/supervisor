@@ -1,11 +1,12 @@
 {
   "acciones": {},
-  "cuando": "2026-11-18T12:45:44Z",
+  "cuando": "2026-11-18T13:30:50Z",
   "huellas_abiertas": 1,
   "invariantes": {
     "I1": "ok",
-    "I10": "apagada",
+    "I10": "sin-observar",
     "I11": "ok",
+    "I12": "ok",
     "I2": "rota:1",
     "I3": "ok",
     "I4": "ok",
@@ -16,5 +17,8 @@
     "I9": "ok"
   },
   "modo": "actuar",
+  "motivos": {
+    "I10": "congreso-archivo: falta CONGRESO_ARCHIVO_TOKEN en el entorno"
+  },
   "sin_observar": []
 }
