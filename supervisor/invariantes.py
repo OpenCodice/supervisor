@@ -284,8 +284,13 @@ def _misma_falla(a: dict | None, b: dict | None) -> bool:
 # Qué jobs hacen falta (lo usa observar para no pedir de más)
 # --------------------------------------------------------------------------
 
-def necesitan_jobs(foto: dict, cadenas: Cadenas) -> dict[str, list[int]]:
-    """Corridas cuyos jobs hay que leer para evaluar los invariantes, por repo."""
+def necesitan_jobs(foto: dict, cadenas: Cadenas, en_prueba: tuple = ()) -> dict[str, list[int]]:
+    """Corridas cuyos jobs hay que leer para evaluar los invariantes, por repo.
+
+    `en_prueba`: (repo, workflow, desde) de cada arreglo de infraestructura
+    publicado; de sus corridas posteriores se leen los jobs aunque sigan en
+    curso o hayan terminado bien (ahí se ve si el paso de la huella ya pasó).
+    """
     pedir: dict[str, list[int]] = {}
     tope = cadenas.general.get("max_corridas_con_jobs", 40)
     cronico = cadenas.politica.get("cronico_corridas", 3)
@@ -316,6 +321,10 @@ def necesitan_jobs(foto: dict, cadenas: Cadenas) -> dict[str, list[int]]:
                 buenas = [c for c in todas if exitosa(c)]
                 if buenas:
                     ids.append(buenas[-1]["id"])
+        for otro, archivo, desde in en_prueba:
+            if otro == repo:
+                ids += [c["id"] for c in por_archivo.get(archivo, [])
+                        if c["created_at"] >= desde and c.get("status") in ("completed", "in_progress")][-5:]
         pedir[repo] = sorted(set(ids), reverse=True)[:tope]
     return pedir
 

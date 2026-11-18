@@ -185,7 +185,9 @@ def cola_del_paso(log: str, paso: dict | None, n: int) -> list[str]:
 
 def _jobs_de(cliente: Cliente, org: str, repo: str, corrida: dict, lineas: int, cache: Path | None) -> list[dict]:
     """Jobs de una corrida terminada, con la cola del log de los que fallaron. No cambian: se guardan."""
-    archivo = cache / f"{repo}-{corrida['id']}-{corrida.get('run_attempt') or 1}.json" if cache else None
+    # Los jobs de una corrida en curso todavía cambian: no se guardan.
+    terminada = corrida.get("status") == "completed"
+    archivo = cache / f"{repo}-{corrida['id']}-{corrida.get('run_attempt') or 1}.json" if cache and terminada else None
     if archivo and archivo.exists():
         return json.loads(archivo.read_text(encoding="utf-8"))
     crudos = cliente.paginas(f"repos/{org}/{repo}/actions/runs/{corrida['id']}/jobs", "jobs", filter="latest")
@@ -210,7 +212,8 @@ def _jobs_de(cliente: Cliente, org: str, repo: str, corrida: dict, lineas: int, 
     return jobs
 
 
-def tomar_foto(cliente: Cliente, cadenas: Cadenas, ahora: datetime, cache: str | Path | None = None) -> dict:
+def tomar_foto(cliente: Cliente, cadenas: Cadenas, ahora: datetime, cache: str | Path | None = None,
+               huellas: dict | None = None) -> dict:
     org = cadenas.org
     dias = cadenas.general.get("dias_foto", 9)
     desde = (ahora - timedelta(days=dias)).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -218,7 +221,7 @@ def tomar_foto(cliente: Cliente, cadenas: Cadenas, ahora: datetime, cache: str |
     cache = Path(cache) if cache else None
 
     repos = cadenas.repos_con_workflows()
-    if cadenas.encendido("I9") and cadenas.general["repo_supervisor"] not in repos:
+    if (cadenas.encendido("I9") or cadenas.reparacion) and cadenas.general["repo_supervisor"] not in repos:
         repos.append(cadenas.general["repo_supervisor"])
 
     for repo in repos:
@@ -271,7 +274,9 @@ def tomar_foto(cliente: Cliente, cadenas: Cadenas, ahora: datetime, cache: str |
                 entrada["extractor"] = max(ultimos, key=lambda c: c["fecha"])
 
     lineas = cadenas.general.get("lineas_log", 40)
-    for repo, ids in inv.necesitan_jobs(foto, cadenas).items():
+    en_prueba = tuple((r["repo"], r["workflow"], r["arreglo"]["cuando"]) for r in (huellas or {}).values()
+                      if r.get("estado") == "arreglo-publicado" and r.get("arreglo") and r.get("workflow"))
+    for repo, ids in inv.necesitan_jobs(foto, cadenas, en_prueba).items():
         por_id = {c["id"]: c for c in foto["repos"][repo]["corridas"]}
         for ident in ids:
             try:

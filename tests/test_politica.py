@@ -10,6 +10,7 @@ FE = "fiscal-extractor"
 CE = "constitucion-extractor"
 VLE = "vigilar-leyes-estatales.yml"
 DESTINO = f"{FE}/{VLE}"
+REPARAR = "supervisor/reparar-infra.yml"
 
 
 def _acciones(resultado, invariante=None):
@@ -32,15 +33,17 @@ def test_exit_127_reintento_y_despues_agente(cadenas, foto_sana, real, mundo):
     [d] = mundo.de(r, "I2")
     assert (d.clase, d.accion) == ("determinista", "agente")
     assert d.hallazgo.corridas == [44246222455, 44247025218]
-    assert len(mundo.cliente.lanzamientos()) == 1                    # no se relanza otra vez
+    # No se relanza otra vez la vigilancia: se lanza al agente de infraestructura.
+    assert mundo.cliente.lanzamientos()[1:] == [(REPARAR, {"huella": d.huella, "origen": "supervisor"})]
     reg = r["estado"].huellas[d.huella]
-    assert reg["estado"] == "pendiente-agente" and reg["issue"] == 1 and reg["corridas"] == [44246222455, 44247025218]
+    assert reg["estado"] == "en-reparacion" and reg["issue"] == 1 and reg["corridas"] == [44246222455, 44247025218]
     assert reg["paso"] == "Reintentar las leyes con el extractor reparado"
     assert [m for m, ruta, _ in mundo.cliente.llamadas if ruta == "repos/OpenCodice/supervisor/issues"] == ["POST"]
 
-    # Las vueltas siguientes no repiten el issue.
+    # Las vueltas siguientes no repiten el issue ni el lanzamiento.
     r = mundo.vuelta(foto_sana((FE, primera), (FE, segunda)), instante("2026-11-18T08:30:00Z"))
-    assert _acciones(r, "I2") == [] and mundo.cliente.issues == 1
+    assert _acciones(r, "I2") == [("I2", "esperar")] and mundo.cliente.issues == 1
+    assert len(mundo.cliente.lanzamientos()) == 2
 
     # Cuando una corrida posterior termina bien, la huella se cierra y su issue también.
     buena = real("fiscal-extractor#44253703004", display_title=titulo(wf))
@@ -278,7 +281,7 @@ def test_transitoria_respeta_las_esperas(cadenas, foto_sana, real, mundo):
     cuatro = foto_sana((CE, primera), (CE, segunda), (CE, tercera), (CE, cuarta), sin=sin)
     d = decision(cuatro, instante(cuarta["updated_at"]) + timedelta(minutes=5))
     assert (d.clase, d.accion) == ("determinista", "agente")
-    assert len(mundo.cliente.lanzamientos()) == 3
+    assert [destino for destino, _ in mundo.cliente.lanzamientos()] == [f"{CE}/{archivo}"] * 3 + [REPARAR]
 
 
 def test_desconocida_un_reintento_a_la_hora_y_despues_agente(cadenas, foto_sana, mundo):

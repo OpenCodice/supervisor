@@ -119,16 +119,16 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         cliente = None
+        estado = Estado(args.estado)
         if args.foto:
             foto = json.loads(Path(args.foto).read_text(encoding="utf-8"))
         else:
             cliente = Cliente()
-            foto = tomar_foto(cliente, cadenas, ahora, args.cache)
+            foto = tomar_foto(cliente, cadenas, ahora, args.cache, estado.huellas)
         if args.guardar_foto:
             Path(args.guardar_foto).write_text(json.dumps(foto, ensure_ascii=False, indent=1), encoding="utf-8")
         if args.modo == "actuar" and cliente is None:
             cliente = Cliente()
-        estado = Estado(args.estado)
         resultado = correr(foto, cadenas, estado, ahora, Actor(cliente, cadenas, args.modo))
     except ErrorApi as e:
         print(f"::error::{e}", file=sys.stderr)

@@ -1,7 +1,8 @@
 """Ejecuta las acciones que decidió la política y las anota.
 
 En modo `informe` no llama a la API: solo dice lo que haría. El supervisor
-nunca fusiona un PR ni escribe en un repo de datos: lanza workflows, cancela
+nunca fusiona un PR ni escribe en un repo de datos: lanza workflows (también
+reparar-infra.yml, el agente de infraestructura y su reversión), cancela
 corridas, cierra PR atorados (cerrar no publica nada) y deja constancia en
 issues de su propio repo.
 """
@@ -31,7 +32,9 @@ def describir(d: Decision) -> str:
     if d.accion == "cerrar-pr":
         return f"cerrar el PR #{det.get('pr')} de {det.get('repo_datos')} y borrar la rama {det.get('rama')}"
     if d.accion == "agente":
-        return "anotar pendiente-agente y dejar constancia en un issue"
+        return f"lanzar {destino} (agente de infraestructura) y dejar constancia en un issue"
+    if d.accion == "revertir":
+        return f"lanzar {destino}: revertir el arreglo que no pasó su prueba"
     if d.accion == "agotada":
         return "dejar constancia en un issue"
     return d.accion
@@ -132,9 +135,14 @@ class Actor:
                     self._lanzar(det)
             elif d.accion == "cerrar-pr":
                 det |= self._cerrar_pr(det, d)
-            elif d.accion in ("agente", "agotada"):
+            elif d.accion == "agotada":
                 det["issue"] = self._constancia(d)
                 d.efecto = d.efecto | {"issue": det["issue"]}
+            elif d.accion in ("agente", "revertir"):
+                # El issue es la constancia pública; reparar-infra comenta ahí su resultado.
+                det["issue"] = self._constancia(d)
+                d.efecto = d.efecto | {"issue": det["issue"]}
+                self._lanzar(det)
         except ErrorApi as e:
             resultado = f"error: {e}"
         return {
