@@ -18,10 +18,13 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install -q -r requirements.txt
-      - run: python -m pytest -q
       - name: actionlint
+        # Antes de las pruebas: las de las compuertas del agente lo usan.
         run: |
           bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.12/scripts/download-actionlint.bash) 1.7.12 /tmp
-          /tmp/actionlint -color
+          sudo install -m 755 /tmp/actionlint /usr/local/bin/actionlint
+          actionlint -color
+      - run: python -m pytest -q
+      - run: shellcheck scripts/agente/*.sh
       - name: Lint de rutas, lanzamientos, needs y tiempos
         run: python supervisor/lint_workflows.py .

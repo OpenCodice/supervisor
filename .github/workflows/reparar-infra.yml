@@ -1,0 +1,493 @@
+name: Reparar infraestructura
+# El título lleva los inputs: la API no los devuelve (contrato de run-name).
+run-name: "reparar-infra huella=[${{ inputs.huella }}] ensayo=[${{ inputs.ensayo }}] base=[${{ inputs.base }}] revertir=[${{ inputs.revertir }}] repo=[${{ inputs.repo }}] workflow=[${{ inputs.workflow }}] job=[${{ inputs.job }}] paso=[${{ inputs.paso }}] corrida=[${{ inputs.corrida }}] origen=[${{ inputs.origen }}]"
+
+# Una falla determinista de infraestructura (una huella que sobrevivió a los
+# reintentos del reconciliador) la arregla un agente, y código determinista
+# decide si su arreglo entra. Lo lanza la política del supervisor; nunca un
+# issue ni un comentario.
+#
+# El agente escribe workflows que después corren con los secretos de la
+# organización, así que cada job tiene solo el poder que necesita:
+#
+#   preparar    determinista. Lee la huella, el log recortado y arma el brief.
+#               Cuenta el intento antes del agente.
+#   agente      Claude Code con un usuario sin privilegios. Único secreto en su
+#               entorno: CLAUDE_CODE_OAUTH_TOKEN. Entrega archivos, no commits.
+#   compuertas  sin ningún secreto. Pone la entrega sobre un clon limpio y
+#               decide (supervisor/compuertas.py). Produce arreglo.patch.
+#   juez        otro agente, que solo ve la huella, el log, el árbol de partida
+#               y el parche. Tres preguntas cerradas.
+#   publicar    determinista, con SUPERVISOR_TOKEN. Aplica el parche sobre un
+#               clon limpio de main, repite las compuertas, publica, anota y
+#               relanza la corrida que falló. En cualquier otro final anota el
+#               descarte.
+#   revertir    (input `revertir`) `git revert` de un arreglo publicado que no
+#               pasó su corrida de prueba. Lo pide el reconciliador.
+#
+# Con `ensayo` hace todo y no publica ni anota nada: el parche y los veredictos
+# quedan como artefactos.
+on:
+  workflow_dispatch:
+    inputs:
+      huella:
+        description: 'Huella que se repara (estado/huellas.jsonl)'
+        required: true
+      ensayo:
+        description: 'Hace todo y no publica ni anota nada'
+        type: boolean
+        default: false
+      base:
+        description: 'Solo con ensayo: sha del repo afectado del que se parte (para reproducir una falla ya arreglada)'
+        required: false
+        default: ''
+      revertir:
+        description: 'Sha de un arreglo publicado de esa huella: lo revierte en lugar de reparar'
+        required: false
+        default: ''
+      repo:
+        description: 'Solo con ensayo y una huella que no está en el estado: repo afectado'
+        required: false
+        default: ''
+      workflow:
+        description: 'Solo con ensayo: archivo del workflow (vigilar-leyes-estatales.yml)'
+        required: false
+        default: ''
+      job:
+        description: 'Solo con ensayo: job del paso que falla'
+        required: false
+        default: ''
+      paso:
+        description: 'Solo con ensayo: nombre del paso que falla'
+        required: false
+        default: ''
+      corrida:
+        description: 'Solo con ensayo: id de una corrida que falló así'
+        required: false
+        default: ''
+      origen:
+        description: 'Quién lanzó la corrida (supervisor); vacío = a mano'
+        required: false
+        default: ''
+
+# Una sola reparación a la vez, y ninguna se cancela a medias.
+concurrency:
+  group: reparar-infra
+  cancel-in-progress: false
+
+permissions: {}
+
+env:
+  INFRA: /srv/infra
+  ORG: OpenCodice
+  ACTIONLINT: 1.7.12
+
+jobs:
+  preparar:
+    if: ${{ inputs.revertir == '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write   # el intento se anota en estado/acciones.jsonl
+    outputs:
+      repo: ${{ steps.huella.outputs.repo }}
+      partida: ${{ steps.huella.outputs.partida }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Huella, log recortado y briefs
+        id: huella
+        env:
+          # Solo para leer: las corridas y sus logs, y el issue de la huella.
+          GITHUB_TOKEN: ${{ secrets.SUPERVISOR_TOKEN }}
+          HUELLA: ${{ inputs.huella }}
+          ENSAYO: ${{ inputs.ensayo }}
+          BASE: ${{ inputs.base }}
+          DE_REPO: ${{ inputs.repo }}
+          DE_WORKFLOW: ${{ inputs.workflow }}
+          DE_JOB: ${{ inputs.job }}
+          DE_PASO: ${{ inputs.paso }}
+          DE_CORRIDA: ${{ inputs.corrida }}
+        run: |
+          extra=()
+          if [ "$ENSAYO" = true ]; then
+            extra=(--ensayo --base "$BASE" --repo "$DE_REPO" --workflow "$DE_WORKFLOW" --job "$DE_JOB"
+                   --paso "$DE_PASO" --corrida "$DE_CORRIDA")
+          elif [ -n "$BASE$DE_REPO$DE_WORKFLOW$DE_JOB$DE_PASO$DE_CORRIDA" ]; then
+            echo "::error::base, repo, workflow, job, paso y corrida solo valen con ensayo=true."
+            exit 1
+          fi
+          python -m supervisor.reparar preparar --huella "$HUELLA" --salida "$RUNNER_TEMP/preparado" \
+            --clon "$RUNNER_TEMP/afectado" "${extra[@]}"
+          python3 - "$RUNNER_TEMP/preparado/huella.json" >> "$GITHUB_OUTPUT" <<'PY'
+          import json, sys
+          d = json.load(open(sys.argv[1], encoding="utf-8"))
+          print(f"repo={d['registro']['repo']}\npartida={d['partida']}")
+          PY
+      - name: Contar el intento antes del agente
+        # Uno que se cae también cuenta. Si no se puede anotar, el agente no corre.
+        if: ${{ !inputs.ensayo }}
+        run: python -m supervisor.reparar anotar --accion intento-iniciado --huella-json "$RUNNER_TEMP/preparado/huella.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: preparado
+          path: ${{ runner.temp }}/preparado
+          retention-days: 30
+
+  agente:
+    needs: preparar
+    runs-on: ubuntu-latest
+    timeout-minutes: 80
+    permissions: {}
+    env:
+      REPO: ${{ needs.preparar.outputs.repo }}
+      PARTIDA: ${{ needs.preparar.outputs.partida }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: preparado
+          path: ${{ runner.temp }}/preparado
+      - name: Árbol de trabajo y herramientas del agente
+        run: |
+          sudo mkdir -p "$INFRA/bin" "$INFRA/entrada" "$INFRA/salida"
+          sudo git clone -q "https://github.com/$ORG/$REPO.git" "$INFRA/repo"
+          sudo git -C "$INFRA/repo" checkout -q --detach "$PARTIDA"
+          sudo cp scripts/agente/infra.sh "$INFRA/bin/"
+          sudo cp "$RUNNER_TEMP/preparado/brief.md" "$RUNNER_TEMP/preparado/log.txt" supervisor/lint_workflows.py "$INFRA/entrada/"
+          pip install -q -r requirements.txt
+          if [ -f "$INFRA/repo/requirements.txt" ]; then pip install -q -r "$INFRA/repo/requirements.txt"; fi
+          pip install -q pytest
+          bash <(curl -fsSL "https://raw.githubusercontent.com/rhysd/actionlint/v$ACTIONLINT/scripts/download-actionlint.bash") "$ACTIONLINT" "$RUNNER_TEMP"
+          sudo install -m 755 "$RUNNER_TEMP/actionlint" /usr/local/bin/actionlint
+          command -v claude > /dev/null || npm install -g @anthropic-ai/claude-code > /dev/null
+          bash scripts/agente/infra.sh aislar agente puerta
+          sudo chown -R agente: "$INFRA/repo" "$INFRA/salida"
+          sudo chmod -R go-w "$INFRA/bin" "$INFRA/entrada"
+      - name: Puerta local hacia egress-mx
+        # Para que el agente pueda probar una descarga por México sin tener
+        # EGRESS_MX_TOKEN: la misma puerta que usa la ronda de expansión
+        # (proxy_mx.py), aquí con su propio usuario. El token llega a ella por
+        # un archivo que borra al arrancar; no está en su entorno ni en el del
+        # agente, y el agente (otro usuario, sin sudo) no puede leer la memoria
+        # del proceso. El paso siguiente lo comprueba.
+        id: puerta
+        env:
+          EGRESS_MX_TOKEN: ${{ secrets.EGRESS_MX_TOKEN }}
+        run: |
+          if [ -z "$EGRESS_MX_TOKEN" ]; then
+            echo "Sin EGRESS_MX_TOKEN: el agente trabaja sin puerta."
+            exit 0
+          fi
+          git clone -q --depth 1 "https://github.com/$ORG/fiscal-extractor.git" "$RUNNER_TEMP/fiscal-extractor"
+          sudo install -m 644 "$RUNNER_TEMP/fiscal-extractor/scripts/agente/proxy_mx.py" "$INFRA/bin/proxy_mx.py"
+          sudo install -d -m 700 -o puerta "$INFRA/puerta"
+          printf '%s' "$EGRESS_MX_TOKEN" | sudo -n -u puerta sh -c 'umask 077; cat > "$0/puerta/token"' "$INFRA"
+          sudo -n -u puerta -H env -i "PATH=$PATH" nohup python3 -I "$INFRA/bin/proxy_mx.py" "$INFRA/puerta/token" 8765 \
+            > /dev/null 2>&1 &
+          sleep 3
+          pid=$(pgrep -u puerta -f proxy_mx.py | head -n 1)
+          if [ -z "$pid" ] || sudo test -e "$INFRA/puerta/token"; then
+            echo "::warning::La puerta hacia egress-mx no arrancó: el agente trabaja sin ella."
+            sudo pkill -u puerta > /dev/null 2>&1
+            sudo rm -f "$INFRA/puerta/token"
+            exit 0
+          fi
+          dominios=$(curl -fsSL "https://raw.githubusercontent.com/$ORG/constitucion-extractor/main/egress-mx/permitidos.json" \
+                       | python3 -c 'import json, sys; print(" ".join(sorted(json.load(sys.stdin)["dominios"])))') || dominios=""
+          echo "pid=$pid" >> "$GITHUB_OUTPUT"
+          echo "dominios=$dominios" >> "$GITHUB_OUTPUT"
+      - name: Comprobar que el agente está aislado
+        # Sin sudo, sin docker, sin el directorio del runner y sin acceso a la
+        # puerta. Si no se puede garantizar, el agente no corre.
+        env:
+          PUERTA: ${{ steps.puerta.outputs.pid }}
+        run: |
+          if ! bash "$INFRA/bin/infra.sh" como agente comprobar "$PUERTA"; then
+            sudo pkill -u puerta > /dev/null 2>&1
+            exit 1
+          fi
+      - name: Decirle al agente si hay puerta
+        env:
+          PUERTA: ${{ steps.puerta.outputs.pid }}
+          DOMINIOS: ${{ steps.puerta.outputs.dominios }}
+        run: |
+          sudo --preserve-env=PUERTA,DOMINIOS python3 - "$INFRA/entrada/brief.md" <<'PY'
+          import os, pathlib, sys
+          ruta = pathlib.Path(sys.argv[1])
+          dominios = os.environ.get("DOMINIOS", "").split()
+          if os.environ.get("PUERTA") and dominios:
+              texto = ("Para probar una descarga desde México hay una puerta local hacia el Worker egress-mx: "
+                       "`curl -sS \"http://127.0.0.1:8765/?url=<URL codificada>\"`. Solo sirve para estos dominios: "
+                       + ", ".join(f"`{d}`" for d in dominios) + ". Es para comprobar tu diagnóstico, no para "
+                       "ponerla en el arreglo.")
+          else:
+              texto = "En esta corrida no hay puerta hacia el Worker egress-mx: no puedes probar descargas desde México."
+          ruta.write_text(ruta.read_text(encoding="utf-8").replace("__PUERTA__", texto), encoding="utf-8")
+          PY
+      - name: Agente — escribir el arreglo
+        timeout-minutes: 55
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          AGENTE_MINUTOS: 45
+          AGENTE_MAX_TURNOS: 100
+        run: |
+          bash "$INFRA/bin/infra.sh" como agente agente > "$RUNNER_TEMP/agente.json" 2> "$RUNNER_TEMP/agente.err"
+          tail -n 5 "$RUNNER_TEMP/agente.err"
+          python3 -c 'import json, sys; r = json.load(open(sys.argv[1])); print(f"{r.get(\"num_turns\")} turnos"); print((r.get("result") or "")[-1500:])' \
+            "$RUNNER_TEMP/agente.json" 2> /dev/null || echo "El agente no dejó una salida legible."
+      - name: Cerrar la puerta y recoger la entrega
+        # Lo que deja el agente se lee con su usuario: un enlace simbólico suyo
+        # no puede traer nada que él no pudiera leer.
+        if: ${{ always() }}
+        run: |
+          sudo pkill -u puerta > /dev/null 2>&1
+          mkdir -p "$RUNNER_TEMP/entrega"
+          bash "$INFRA/bin/infra.sh" como agente empacar || echo "::warning::No se pudo empacar la entrega."
+          for f in entrega.tar borrados.txt veredicto.json; do
+            sudo -n -u agente head -c 30000000 "$INFRA/salida/$f" 2> /dev/null | cat > "$RUNNER_TEMP/entrega/$f" \
+              || rm -f "$RUNNER_TEMP/entrega/$f"
+          done
+          ls -l "$RUNNER_TEMP/entrega"
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        with:
+          name: entrega
+          path: ${{ runner.temp }}/entrega
+          if-no-files-found: warn
+          retention-days: 30
+      - uses: actions/upload-artifact@v4
+        # Aparte de la entrega: el juez no ve cómo razonó el agente.
+        if: ${{ always() }}
+        with:
+          name: sesion-agente
+          path: |
+            ${{ runner.temp }}/agente.json
+            ${{ runner.temp }}/agente.err
+          if-no-files-found: ignore
+          retention-days: 30
+
+  compuertas:
+    # Sin ningún secreto. La entrega del agente son datos: se pone sobre un clon
+    # limpio del commit de partida y de ahí sale el parche.
+    needs: [preparar, agente]
+    if: ${{ always() && needs.preparar.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    permissions: {}
+    env:
+      REPO: ${{ needs.preparar.outputs.repo }}
+      PARTIDA: ${{ needs.preparar.outputs.partida }}
+    outputs:
+      pasa: ${{ steps.estaticas.outputs.pasa }}
+      veredicto: ${{ steps.estaticas.outputs.veredicto }}
+      sha_parche: ${{ steps.estaticas.outputs.sha_parche }}
+      dinamicas: ${{ steps.dinamicas.outputs.pasa }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/download-artifact@v4
+        with:
+          name: preparado
+          path: ${{ runner.temp }}/preparado
+      - uses: actions/download-artifact@v4
+        with:
+          name: entrega
+          path: ${{ runner.temp }}/entrega
+      - name: Herramientas y clones limpios
+        run: |
+          pip install -q -r requirements.txt
+          bash <(curl -fsSL "https://raw.githubusercontent.com/rhysd/actionlint/v$ACTIONLINT/scripts/download-actionlint.bash") "$ACTIONLINT" "$RUNNER_TEMP"
+          sudo install -m 755 "$RUNNER_TEMP/actionlint" /usr/local/bin/actionlint
+          for lado in antes despues; do
+            git clone -q "https://github.com/$ORG/$REPO.git" "$RUNNER_TEMP/$lado"
+            git -C "$RUNNER_TEMP/$lado" checkout -q --detach "$PARTIDA"
+          done
+          mkdir -p "$RUNNER_TEMP/hermanos"
+          for otro in constitucion-extractor fiscal-extractor congreso-extractor; do
+            [ "$otro" = "$REPO" ] || git clone -q --depth 1 "https://github.com/$ORG/$otro.git" "$RUNNER_TEMP/hermanos/$otro"
+          done
+          if [ -f "$RUNNER_TEMP/antes/requirements.txt" ]; then pip install -q -r "$RUNNER_TEMP/antes/requirements.txt"; fi
+          pip install -q pytest
+      - name: Cerco y compuertas que no ejecutan nada del arreglo
+        id: estaticas
+        run: |
+          python -m supervisor.reparar compuertas --huella-json "$RUNNER_TEMP/preparado/huella.json" \
+            --antes "$RUNNER_TEMP/antes" --despues "$RUNNER_TEMP/despues" --entrega "$RUNNER_TEMP/entrega/entrega.tar" \
+            --borrados "$RUNNER_TEMP/entrega/borrados.txt" --veredicto "$RUNNER_TEMP/entrega/veredicto.json" \
+            --trabajo "$RUNNER_TEMP/compuertas" --hermanos "$RUNNER_TEMP/hermanos"
+      - name: Compuertas que ejecutan el arreglo (pytest y Workers)
+        # Al final y con otro usuario, sobre una copia: lo que corra aquí no
+        # puede cambiar el parche ni el informe de las compuertas.
+        id: dinamicas
+        if: ${{ steps.estaticas.outputs.pasa == 'true' && steps.estaticas.outputs.veredicto == 'arreglo' }}
+        run: |
+          bash scripts/agente/infra.sh aislar pruebas
+          sudo cp -R "$RUNNER_TEMP/despues" /srv/pruebas
+          sudo rm -rf /srv/pruebas/.git
+          sudo chown -R pruebas: /srv/pruebas
+          python -m supervisor.reparar dinamicas --huella-json "$RUNNER_TEMP/preparado/huella.json" \
+            --compuertas "$RUNNER_TEMP/compuertas/compuertas.json" --arbol /srv/pruebas --como pruebas \
+            --salida "$RUNNER_TEMP/compuertas/dinamicas.json"
+          python3 -c 'import json, sys; print("pasa=" + str(json.load(open(sys.argv[1]))["pasa"]).lower())' \
+            "$RUNNER_TEMP/compuertas/dinamicas.json" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        with:
+          name: compuertas
+          path: ${{ runner.temp }}/compuertas
+          if-no-files-found: warn
+          retention-days: 30
+
+  juez:
+    # No ve el veredicto ni la sesión del primer agente: solo la huella, el log,
+    # el árbol de partida y el parche que pasó las compuertas.
+    needs: [preparar, compuertas]
+    if: ${{ always() && needs.compuertas.outputs.pasa == 'true' && needs.compuertas.outputs.dinamicas == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    permissions: {}
+    env:
+      REPO: ${{ needs.preparar.outputs.repo }}
+      PARTIDA: ${{ needs.preparar.outputs.partida }}
+      SHA_PARCHE: ${{ needs.compuertas.outputs.sha_parche }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: preparado
+          path: ${{ runner.temp }}/preparado
+      - uses: actions/download-artifact@v4
+        with:
+          name: compuertas
+          path: ${{ runner.temp }}/compuertas
+      - name: Copia de solo lectura para el juez
+        run: |
+          echo "$SHA_PARCHE  $RUNNER_TEMP/compuertas/arreglo.patch" | sha256sum --check --quiet
+          sudo mkdir -p "$INFRA/bin" "$INFRA/entrada"
+          sudo git clone -q "https://github.com/$ORG/$REPO.git" "$INFRA/repo"
+          sudo git -C "$INFRA/repo" checkout -q --detach "$PARTIDA"
+          sudo cp scripts/agente/infra.sh "$INFRA/bin/"
+          sudo cp "$RUNNER_TEMP/preparado/brief-juez.md" "$RUNNER_TEMP/preparado/log.txt" \
+            "$RUNNER_TEMP/compuertas/arreglo.patch" "$INFRA/entrada/"
+          sudo chmod -R go-w "$INFRA"
+          command -v claude > /dev/null || npm install -g @anthropic-ai/claude-code > /dev/null
+          bash scripts/agente/infra.sh aislar juez
+          bash "$INFRA/bin/infra.sh" como juez comprobar
+      - name: Juez — tres preguntas cerradas
+        timeout-minutes: 25
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          AGENTE_MINUTOS: 20
+          AGENTE_MAX_TURNOS: 40
+        run: |
+          mkdir -p "$RUNNER_TEMP/juez"
+          bash "$INFRA/bin/infra.sh" como juez juez > "$RUNNER_TEMP/juez/juez.json" 2> "$RUNNER_TEMP/juez/juez.err"
+          python3 -c 'import json, sys; print((json.load(open(sys.argv[1])).get("result") or "")[-1500:])' \
+            "$RUNNER_TEMP/juez/juez.json" 2> /dev/null || echo "El juez no dejó una salida legible."
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        with:
+          name: juez
+          path: ${{ runner.temp }}/juez
+          if-no-files-found: warn
+          retention-days: 30
+
+  publicar:
+    # Determinista. Publica solo si el agente entregó un arreglo, pasaron todas
+    # las compuertas y el juez contestó (sí, no, no); en cualquier otro final
+    # anota el descarte con su motivo. Con ensayo no publica ni anota.
+    needs: [preparar, agente, compuertas, juez]
+    if: ${{ always() && inputs.revertir == '' && needs.preparar.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: write   # estado/acciones.jsonl
+      issues: write     # el resultado, en el issue de la huella
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/download-artifact@v4
+        with:
+          path: ${{ runner.temp }}/artefactos
+      - name: Herramientas
+        run: |
+          pip install -q -r requirements.txt
+          bash <(curl -fsSL "https://raw.githubusercontent.com/rhysd/actionlint/v$ACTIONLINT/scripts/download-actionlint.bash") "$ACTIONLINT" "$RUNNER_TEMP"
+          sudo install -m 755 "$RUNNER_TEMP/actionlint" /usr/local/bin/actionlint
+          mkdir -p "$RUNNER_TEMP/hermanos"
+          for otro in constitucion-extractor fiscal-extractor congreso-extractor; do
+            git clone -q --depth 1 "https://github.com/$ORG/$otro.git" "$RUNNER_TEMP/hermanos/$otro"
+          done
+          git pull -q --ff-only origin main
+      - name: Publicar el arreglo o anotar el descarte
+        # Aquí no se ejecuta nada del arreglo: el parche se aplica con git y se
+        # vuelven a correr las compuertas que solo leen.
+        env:
+          SUPERVISOR_TOKEN: ${{ secrets.SUPERVISOR_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
+          ENSAYO: ${{ inputs.ensayo }}
+          SHA_PARCHE: ${{ needs.compuertas.outputs.sha_parche }}
+          REPO: ${{ needs.preparar.outputs.repo }}
+        run: |
+          extra=()
+          if [ "$ENSAYO" = true ]; then extra=(--ensayo); fi
+          # El repo afectado no es su propio hermano.
+          rm -rf "$RUNNER_TEMP/hermanos/$REPO"
+          a="$RUNNER_TEMP/artefactos"
+          python -m supervisor.reparar publicar --huella-json "$a/preparado/huella.json" \
+            --compuertas "$a/compuertas/compuertas.json" --dinamicas "$a/compuertas/dinamicas.json" \
+            --juez "$a/juez/juez.json" --parche "$a/compuertas/arreglo.patch" --sha-parche "$SHA_PARCHE" \
+            --trabajo "$RUNNER_TEMP/publicar" --hermanos "$RUNNER_TEMP/hermanos" "${extra[@]}"
+
+  revertir:
+    # Determinista. Solo revierte el commit que este workflow publicó para esa
+    # huella (lo comprueba contra estado/acciones.jsonl).
+    if: ${{ inputs.revertir != '' && !inputs.ensayo }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      issues: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Herramientas
+        run: |
+          pip install -q -r requirements.txt
+          bash <(curl -fsSL "https://raw.githubusercontent.com/rhysd/actionlint/v$ACTIONLINT/scripts/download-actionlint.bash") "$ACTIONLINT" "$RUNNER_TEMP"
+          sudo install -m 755 "$RUNNER_TEMP/actionlint" /usr/local/bin/actionlint
+          git pull -q --ff-only origin main
+      - name: Revertir el arreglo que no pasó su prueba
+        env:
+          SUPERVISOR_TOKEN: ${{ secrets.SUPERVISOR_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
+          HUELLA: ${{ inputs.huella }}
+          SHA: ${{ inputs.revertir }}
+        run: python -m supervisor.reparar revertir --huella "$HUELLA" --sha "$SHA" --trabajo "$RUNNER_TEMP/revertir"
