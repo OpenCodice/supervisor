@@ -40,8 +40,8 @@ def _linea(raiz: Path, fragmento: str, archivo: str = "vigilar.yml") -> int:
     return next(n for n, l in enumerate(lineas, 1) if fragmento in l)
 
 
-def _lint(raiz: Path, hermanos: Path | None = None) -> list[str]:
-    return [f"{a}:{l}: {m}" for a, l, m in Lint(raiz, hermanos, "OpenCodice/extractor").correr()]
+def _lint(raiz: Path, hermanos: Path | None = None, lanzador: bool | None = None) -> list[str]:
+    return [f"{a}:{l}: {m}" for a, l, m in Lint(raiz, hermanos, "OpenCodice/extractor", lanzador=lanzador).correr()]
 
 
 # El job `reparar` de vigilar-leyes-estatales.yml antes de 6e05c25: el workspace es un checkout del
@@ -165,7 +165,7 @@ def test_sparse_checkout_y_bucle_de_clones(tmp_path):
     assert "`scripts/validar.sh` no existe en OpenCodice/extractor" in hallazgos[1]
 
 
-def test_gh_workflow_run_apunta_a_un_workflow_y_a_inputs_que_existen(tmp_path):
+def test_en_el_lanzador_gh_workflow_run_apunta_a_un_workflow_y_a_inputs_que_existen(tmp_path):
     raiz = _repo(tmp_path, """\
         uno:
           runs-on: ubuntu-latest
@@ -182,7 +182,7 @@ def test_gh_workflow_run_apunta_a_un_workflow_y_a_inputs_que_existen(tmp_path):
     (raiz / "scripts" / "lanzar.sh").write_text(
         'repo="${GITHUB_REPOSITORY:-OpenCodice/extractor}"\n'
         'gh workflow run vigilar.yml -R "$repo" --ref main -f origen=x "$@"\n')
-    hallazgos = _lint(raiz)
+    hallazgos = _lint(raiz, lanzador=True)
     assert [h.split(": ", 1)[1] for h in hallazgos] == [
         "`gh workflow run vigilar.yml -f reintento=…`: vigilar.yml no declara el input `reintento`",
         "`gh workflow run no-existe.yml`: ese workflow no existe en OpenCodice/extractor",
@@ -190,6 +190,148 @@ def test_gh_workflow_run_apunta_a_un_workflow_y_a_inputs_que_existen(tmp_path):
         "`gh workflow run vigilar.yml -f origen=…`: vigilar.yml no declara el input `origen`",
     ]
     assert hallazgos[-1].startswith("scripts/lanzar.sh:2:")
+
+
+NO_LANZA = "un workflow no lanza corridas"
+
+
+def test_un_workflow_no_lanza(tmp_path):
+    raiz = _repo(tmp_path, """\
+        uno:
+          runs-on: ubuntu-latest
+          timeout-minutes: 10
+          steps:
+            - run: |
+                gh workflow run vigilar.yml -R "$GITHUB_REPOSITORY" --ref main -f estados="$E"
+                gh run rerun "$GITHUB_RUN_ID" --failed
+                gh api repos/OpenCodice/web/dispatches -f event_type=datos-actualizados
+                gh api "repos/$GITHUB_REPOSITORY/actions/workflows/vigilar.yml/dispatches" -f ref=main
+                curl -fsS -X POST -H "Authorization: Bearer $T" https://api.github.com/repos/o/r/dispatches -d '{}'
+                # gh workflow run comentado.yml
+                gh api repos/OpenCodice/web/commits/main
+                echo "se pide con una salida; nadie corre gh  workflow  list aquí"
+            - uses: actions/github-script@v7
+              with:
+                script: |
+                  await github.rest.actions.createWorkflowDispatch({owner, repo, workflow_id: 'vigilar.yml', ref: 'main'})
+            - run: python scripts/medir.py
+            - uses: actions/checkout@v5
+        """)
+    (raiz / "scripts" / "lanzar.sh").write_text('#!/usr/bin/env bash\ngh workflow run vigilar.yml "$@"\n')
+    (raiz / "scripts" / "medir.py").write_text(
+        '# requests.post(f"{api}/dispatches")  (comentado)\n'
+        'import subprocess\nsubprocess.run(["gh", "api", f"repos/{repo}/dispatches"])\n'
+        'requests.post(url + "/dispatches", json={})\n')
+    hallazgos = [h for h in _lint(raiz) if NO_LANZA in h]
+    lineas = lambda fragmento: f"vigilar.yml:{_linea(raiz, fragmento)}:"  # noqa: E731
+    assert [h.split(": ")[0] + ":" for h in hallazgos] == [
+        f".github/workflows/{lineas('gh workflow run vigilar.yml -R')}", f".github/workflows/{lineas('gh run rerun')}",
+        f".github/workflows/{lineas('web/dispatches')}", f".github/workflows/{lineas('vigilar.yml/dispatches')}",
+        f".github/workflows/{lineas('curl -fsS')}", f".github/workflows/{lineas('createWorkflowDispatch')}",
+        "scripts/lanzar.sh:2:", "scripts/medir.py:3:", "scripts/medir.py:4:"], hallazgos
+    assert "`gh run rerun`" in hallazgos[1] and "`gh api …/dispatches`" in hallazgos[2]
+    # Recibir un `repository_dispatch` (en `on:`) no es lanzar.
+    limpio = _repo(tmp_path / "limpio", """\
+        uno:
+          runs-on: ubuntu-latest
+          timeout-minutes: 10
+          steps:
+            - run: echo "llegó ${{ github.event.action }}"
+        """, otros={"web.yml": "on:\n  repository_dispatch:\n    types: [datos-actualizados]\njobs: {}\n"})
+    assert _lint(limpio) == []
+
+
+def test_solo_el_supervisor_esta_exento_de_no_lanzar(tmp_path):
+    raiz = _repo(tmp_path, """\
+        uno:
+          runs-on: ubuntu-latest
+          timeout-minutes: 10
+          steps:
+            - run: gh workflow run vigilar.yml -f estados=x
+        """)
+    por_nombre = lambda propio, **k: [m for _, _, m in Lint(raiz, None, propio, **k).correr()]  # noqa: E731
+    assert por_nombre("OpenCodice/supervisor") == [] and por_nombre("otra-org/Supervisor") == []
+    assert NO_LANZA in por_nombre("OpenCodice/extractor")[0]
+    assert NO_LANZA in por_nombre("OpenCodice/supervisor-extractor")[0]
+    assert por_nombre("OpenCodice/extractor", lanzador=True) == []
+    assert NO_LANZA in por_nombre("OpenCodice/supervisor", lanzador=False)[0]
+    assert main([str(raiz), "--repo", "OpenCodice/extractor"]) == 1
+    assert main([str(raiz), "--repo", "OpenCodice/extractor", "--lanzador"]) == 0
+
+
+PIDE = """\
+reparar:
+  runs-on: ubuntu-latest
+  timeout-minutes: 10
+  outputs:
+    pedir_vigilancia: ${{ steps.reintentar.outputs.pedir }}
+    pedir_ronda: ${{ steps.ronda.outputs.pedir }}
+  steps:
+    - id: reintentar
+      run: echo 'pedir={"workflow":"vigilar.yml","inputs":{"estados":"jalisco"}}' >> "$GITHUB_OUTPUT"
+    - id: ronda
+      run: |
+        echo "pedir=$(jq -cn --arg e "$ESTADO" '{workflow: "vigilar.yml", inputs: {estados: $e}}')" >> "$GITHUB_OUTPUT"
+otro:
+  runs-on: ubuntu-latest
+  timeout-minutes: 10
+  steps:
+    - run: 'true'
+estado:
+  name: "estado pendiente=[false]"
+  needs: [reparar, otro]
+  if: ${{ always() }}
+  runs-on: ubuntu-latest
+  timeout-minutes: 5
+  permissions: {}
+  steps:
+    - name: Lo que declaró cada job
+      env:
+        NEEDS: ${{ toJSON(needs) }}
+      run: printf '%s' "$NEEDS" > cadena.json
+    - uses: actions/upload-artifact@v4
+      with:
+        name: cadena
+        path: cadena.json
+"""
+
+
+def test_las_peticiones_escritas_nombran_un_workflow_y_inputs_que_existen(tmp_path):
+    assert _lint(_repo(tmp_path, PIDE)) == []
+    malas = PIDE.replace(
+        """'pedir={"workflow":"vigilar.yml","inputs":{"estados":"jalisco"}}'""",
+        """'pedir=[{"workflow":"vigilar.yml","inputs":{"reintento":"true","origen":"reparar"}},"""
+        """{"workflow":"no-existe.yml","inputs":{}},{"workflow":"pruebas.yml"},"""
+        """{"workflow":"otro.yml","repo":"ajeno","inputs":{"x":"1"}},{"workflow":"vigilar.yml","repo":"datos","inputs":{}}]'"""
+    ).replace("{workflow: \"vigilar.yml\", inputs: {estados: $e}}", "{workflow: \"vigilar.yml\", inputs: {estado: $e, ($k): $e}}")
+    raiz = _repo(tmp_path / "malas", malas, otros={"pruebas.yml": "on: [push]\njobs: {}\n"})
+    (tmp_path / "malas" / "datos").mkdir()
+    hallazgos = [h.split(": ", 1)[1] for h in _lint(raiz, tmp_path / "malas")]
+    assert hallazgos == [
+        "petición de `no-existe.yml`: ese workflow no existe en OpenCodice/extractor",
+        "petición de `pruebas.yml`: ese workflow no tiene `workflow_dispatch`",
+        "petición de `vigilar.yml`: ese workflow no existe en OpenCodice/datos",
+        "petición de `vigilar.yml`: no lleva `origen`; lo pone el supervisor",
+        "petición de `vigilar.yml`: vigilar.yml no declara el input `reintento`",
+        "petición de `vigilar.yml`: vigilar.yml no declara el input `estado`",
+    ]
+
+
+def test_quien_pide_termina_en_un_job_estado_que_sube_la_cadena(tmp_path):
+    def mensajes(jobs: str, carpeta: str) -> list[str]:
+        return [h.split(": ", 1)[1] for h in _lint(_repo(tmp_path / carpeta, jobs))]
+
+    sin_estado = PIDE[:PIDE.index("estado:")]
+    assert mensajes(sin_estado, "a") == [
+        "job `reparar` declara salidas `pedir*`, pero el workflow no tiene el job `estado` que las publica en el artefacto `cadena`"]
+    [falta] = mensajes(PIDE.replace("needs: [reparar, otro]", "needs: [reparar]"), "b")
+    assert falta.startswith("job `estado`: sus `needs` no incluyen a `otro`")
+    [siempre] = mensajes(PIDE.replace("  if: ${{ always() }}\n", ""), "c")
+    assert "sin `if: always()`" in siempre
+    [sube] = mensajes(PIDE.replace("name: cadena", "name: otra-cosa"), "d")
+    assert "no sube el artefacto `cadena`" in sube
+    # Sin salidas `pedir*` el job `estado` no es obligatorio.
+    assert mensajes("uno:\n  runs-on: ubuntu-latest\n  timeout-minutes: 5\n  steps:\n    - run: 'true'\n", "e") == []
 
 
 def test_needs_y_outputs(tmp_path):
@@ -300,7 +442,10 @@ def test_aceptacion_fiscal_extractor_antes_de_6e05c25(tmp_path):
         pytest.skip(f"no se pudo sacar 6e05c25~1: {creado.stderr.strip()}")
     try:
         for hermanos in (None, RAIZ.parent):
-            rutas = [h for h in _lint_real(arbol, hermanos) if "timeout-minutes" not in h]
+            todos = _lint_real(arbol, hermanos)
+            # Ese árbol todavía lanzaba desde sus workflows y desde sus scripts.
+            assert sum(NO_LANZA in h for h in todos) >= 10
+            rutas = [h for h in todos if "timeout-minutes" not in h and NO_LANZA not in h]
             assert len(rutas) == 2, rutas
             assert rutas[0].startswith(".github/workflows/vigilar-leyes-estatales.yml:709: job `reparar`, "
                                        "paso «Reintentar las leyes con el extractor reparado»")

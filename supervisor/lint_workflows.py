@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Lint de los workflows de un repo: lo que actionlint no mira.
 
-    python lint_workflows.py <raíz del repo> [--hermanos <dir>] [--repo DUEÑO/NOMBRE]
+    python lint_workflows.py <raíz del repo> [--hermanos <dir>] [--repo DUEÑO/NOMBRE] [--lanzador]
 
 Por cada job:
 - rutas: calcula qué directorios existen (cada `actions/checkout` con su
@@ -9,8 +9,17 @@ Por cada job:
   exige que todo script invocado por ruta caiga en uno de ellos y exista en ese
   repo. Solo opina de los repos que tiene en disco: el propio y, con
   `--hermanos`, los que estén en esa carpeta.
-- lanzamientos: cada `gh workflow run X -f k=v` del mismo repo apunta a un
-  workflow que existe, admite `workflow_dispatch` y declara ese input.
+- un workflow no lanza: ni los workflows ni los scripts de `scripts/` contienen
+  `gh workflow run`, `gh run rerun`, un `dispatches` de la API (con `gh api` o
+  `curl`) ni las llamadas equivalentes de `actions/github-script`. Lo que tiene
+  que correr después se pide (salida `pedir*`) y lo lanza el supervisor. Exento
+  solo el lanzador: el repo que se llama `supervisor`, o `--lanzador`.
+- peticiones: cada petición escrita en un `run:` (JSON literal o el objeto de un
+  `jq -n`) nombra un workflow que existe, admite `workflow_dispatch` y declara
+  esos inputs, y no trae `origen` (lo pone el supervisor). Un workflow con
+  salidas `pedir*` termina en un job `estado` que depende de todos los demás,
+  corre siempre y sube el artefacto `cadena`. En el lanzador, lo mismo vale
+  para cada `gh workflow run X -f k=v`.
 - needs: cada `needs.J.outputs.K` y `needs.J.result` nombra un job que está en
   `needs` y un output declarado.
 - tiempos: todo job con `runs-on` declara `timeout-minutes`, y ningún paso
@@ -470,10 +479,51 @@ def _scripts(texto: str):
 # Reglas
 # --------------------------------------------------------------------------
 
+# Lo que lanza una corrida: solo lo hace el lanzador.
+_LANZA = [
+    (re.compile(r"\bgh\s+workflow\s+run\b"), "`gh workflow run`"),
+    (re.compile(r"\bgh\s+run\s+rerun\b"), "`gh run rerun`"),
+    (re.compile(r"\bgh\s+api\b[^\n|;&]*/dispatches\b"), "`gh api …/dispatches`"),
+    (re.compile(r"\b(?:curl|wget)\b[^\n|;&]*/dispatches\b"), "una llamada a `…/dispatches`"),
+    (re.compile(r"\b(?:createWorkflowDispatch|createDispatchEvent|reRunWorkflow(?:FailedJobs)?)\b"),
+     "un lanzamiento con la API de Actions"),
+    (re.compile(r"""['"/]dispatches['"]"""), "una llamada a `…/dispatches`"),
+]
+_OBJETO_PETICION = re.compile(r"""\{\s*["']?workflow["']?\s*:\s*["']([^"'$\s]+)["']""")
+_CLAVE = re.compile(r"""(?:^|[{,])\s*["']?([A-Za-z_][A-Za-z0-9_]*)["']?\s*:""")
+
+
+def _hasta_cierre(texto: str, abre: int) -> str:
+    """El objeto que empieza en `texto[abre] == "{"`, hasta su llave de cierre."""
+    nivel = 0
+    for i in range(abre, len(texto)):
+        nivel += (texto[i] == "{") - (texto[i] == "}")
+        if nivel == 0:
+            return texto[abre:i + 1]
+    return texto[abre:]
+
+
+def peticiones_escritas(texto: str):
+    """(workflow, repo o None, claves de inputs) de cada petición escrita en un renglón.
+
+    Reconoce el JSON literal y el objeto de `jq -n`; una clave calculada
+    (`($k)`) o un valor con variables no se pueden comprobar y se dejan pasar.
+    """
+    for m in _OBJETO_PETICION.finditer(texto):
+        objeto = _hasta_cierre(texto, m.start())
+        repo = re.search(r"""["']?repo["']?\s*:\s*["']([^"'$\s]+)["']""", objeto)
+        dentro = re.search(r"""["']?inputs["']?\s*:\s*\{""", objeto)
+        claves = _CLAVE.findall(_hasta_cierre(objeto, dentro.end() - 1)) if dentro else []
+        yield m.group(1), repo.group(1) if repo else None, claves
+
+
 class Lint:
-    def __init__(self, raiz: Path, hermanos: Path | None = None, propio: str | None = None):
+    def __init__(self, raiz: Path, hermanos: Path | None = None, propio: str | None = None,
+                 lanzador: bool | None = None):
         self.raiz = Path(raiz)
         self.repos = Repos(self.raiz, propio or slug_de(self.raiz), Path(hermanos) if hermanos else None)
+        # El único repo que lanza corridas es el supervisor; en los demás, lanzar es un hallazgo.
+        self.lanzador = self.repos.propio.split("/")[-1].lower() == "supervisor" if lanzador is None else lanzador
         self.hallazgos: list[tuple[str, int, str]] = []
         self.carpeta = self.raiz / ".github" / "workflows"
         self.workflows: dict[str, Mapa] = {}
@@ -495,10 +545,12 @@ class Lint:
                 self._needs(archivo, nombre_job, job, jobs)
                 self._tiempos(archivo, nombre_job, job, jobs.lineas.get(nombre_job, job.linea))
                 self._rutas(archivo, nombre_job, job, wf)
+                self._no_lanza_en_job(archivo, job)
+            self._job_estado(archivo, wf, jobs)
         scripts = self.raiz / "scripts"
         if scripts.is_dir():
-            for ruta in sorted(scripts.rglob("*.sh")):
-                self._lanzamientos_de_script(ruta)
+            for ruta in sorted(p for p in scripts.rglob("*") if p.is_file() and p.suffix in EXTENSIONES):
+                self._script_suelto(ruta)
         self.hallazgos.sort()
         return self.hallazgos
 
@@ -700,7 +752,67 @@ class Lint:
             self.anotar(archivo, linea,
                         f"{donde}: `{relativa}` no existe en {d.repo} (en este job, `{visible}` es un checkout de ese repo)")
 
+    # ---- un workflow no lanza ----
+
+    def _no_lanza(self, archivo: str, linea: int, texto: str) -> None:
+        if self.lanzador:
+            return
+        for patron, que in _LANZA:
+            if patron.search(texto):
+                self.anotar(archivo, linea, f"{que}: un workflow no lanza corridas; lo que tiene que correr después "
+                                            f"se pide con una salida `pedir*` y lo lanza el supervisor")
+                return
+
+    def _no_lanza_en_job(self, archivo: str, job: dict) -> None:
+        """Lo que no es un `run:` (el script de `actions/github-script`, por ejemplo)."""
+        for paso in _lista(job.get("steps")):
+            guion = _mapa(_mapa(paso).get("with")).get("script")
+            if isinstance(guion, Texto):
+                for n, renglon in enumerate(str(guion).split("\n")):
+                    self._no_lanza(archivo, guion.linea + (1 if guion.bloque else 0) + n, renglon)
+
+    # ---- peticiones y lanzamientos: el destino existe y declara esos inputs ----
+
+    def _destino(self, archivo: str, linea: int, como: str, destino: str, repo: str, claves: list[str]) -> None:
+        raiz = self.repos.en_disco(repo)
+        if raiz is None:
+            return
+        if raiz == self.raiz:
+            disponibles = self.workflows
+        else:
+            disponibles = self._ajenos.setdefault(raiz, self._leer(raiz / ".github" / "workflows"))
+        if destino not in disponibles:
+            self.anotar(archivo, linea, f"{como}: ese workflow no existe en {repo}")
+            return
+        disparadores = disponibles[destino].get("on")
+        if isinstance(disparadores, dict):
+            tiene = "workflow_dispatch" in disparadores
+            declarados = set(_mapa(_mapa(disparadores.get("workflow_dispatch")).get("inputs")))
+        else:
+            tiene = "workflow_dispatch" in [str(x) for x in _lista(disparadores)]
+            declarados = set()
+        if not tiene:
+            self.anotar(archivo, linea, f"{como}: ese workflow no tiene `workflow_dispatch`")
+            return
+        for clave in claves:
+            if clave and "$" not in clave and clave not in declarados:
+                self.anotar(archivo, linea, f"{como}: {destino} no declara el input `{clave}`")
+
+    def _peticiones(self, archivo: str, linea: int, texto: str) -> None:
+        for destino, repo, claves in peticiones_escritas(texto):
+            if not destino.endswith((".yml", ".yaml")):
+                continue
+            como = f"petición de `{destino}`"
+            if "origen" in claves:
+                self.anotar(archivo, linea, f"{como}: no lleva `origen`; lo pone el supervisor")
+            slug = self.repos.propio if repo is None else (repo if "/" in repo else f"{self.repos.propio.split('/')[0]}/{repo}")
+            self._destino(archivo, linea, como, destino, slug, [c for c in claves if c != "origen"])
+
     def _lanzamientos(self, archivo: str, linea: int, texto: str, variables: dict) -> None:
+        self._no_lanza(archivo, linea, texto)
+        self._peticiones(archivo, linea, texto)
+        if not self.lanzador:
+            return
         for m in re.finditer(r"\bgh\s+workflow\s+run\s+(.*)", texto):
             palabras = [_sin_comillas(p) for p in _palabras(m.group(1))]
             destino, repo, campos = None, self.repos.propio, []
@@ -719,32 +831,11 @@ class Lint:
             destino = expandir(destino, variables, self.repos) if destino else None
             if not destino or not destino.endswith((".yml", ".yaml")) or repo is None:
                 continue
-            raiz = self.repos.en_disco(repo)
-            if raiz is None:
-                continue
-            if raiz == self.raiz:
-                disponibles = self.workflows
-            else:
-                disponibles = self._ajenos.setdefault(raiz, self._leer(raiz / ".github" / "workflows"))
-            if destino not in disponibles:
-                self.anotar(archivo, linea, f"`gh workflow run {destino}`: ese workflow no existe en {repo}")
-                continue
-            disparadores = disponibles[destino].get("on")
-            if isinstance(disparadores, dict):
-                tiene = "workflow_dispatch" in disparadores
-                declarados = set(_mapa(_mapa(disparadores.get("workflow_dispatch")).get("inputs")))
-            else:
-                tiene = "workflow_dispatch" in [str(x) for x in _lista(disparadores)]
-                declarados = set()
-            if not tiene:
-                self.anotar(archivo, linea, f"`gh workflow run {destino}`: ese workflow no tiene `workflow_dispatch`")
-                continue
-            for campo in campos:
-                clave = campo.split("=", 1)[0]
-                if clave and "$" not in clave and clave not in declarados:
-                    self.anotar(archivo, linea, f"`gh workflow run {destino} -f {clave}=…`: {destino} no declara el input `{clave}`")
+            for clave in [c.split("=", 1)[0] for c in campos] or [""]:
+                como = f"`gh workflow run {destino} -f {clave}=…`" if clave else f"`gh workflow run {destino}`"
+                self._destino(archivo, linea, como, destino, repo, [clave] if clave else [])
 
-    def _lanzamientos_de_script(self, ruta: Path) -> None:
+    def _script_suelto(self, ruta: Path) -> None:
         archivo = ruta.relative_to(self.raiz).as_posix()
         variables = _variables_base(self.repos)
         try:
@@ -753,6 +844,11 @@ class Lint:
             return
         texto = Texto(contenido)
         texto.linea, texto.bloque = 1, False
+        if ruta.suffix != ".sh":
+            for n, renglon in enumerate(contenido.split("\n"), 1):
+                if not renglon.lstrip().startswith(("#", "//")):
+                    self._no_lanza(archivo, n, renglon)
+            return
         for linea, renglon in renglones(texto):
             m = _ASIGNA.match(renglon)
             if m:
@@ -764,19 +860,47 @@ class Lint:
                 continue
             self._lanzamientos(archivo, linea, renglon, variables)
 
+    # ---- job `estado` ----
+
+    def _job_estado(self, archivo: str, wf: dict, jobs: dict) -> None:
+        piden = [n for n, j in jobs.items() if isinstance(j, dict)
+                 and any(str(k).startswith("pedir") for k in _mapa(j.get("outputs")))]
+        if not piden:
+            return
+        estado = jobs.get("estado")
+        if not isinstance(estado, dict):
+            self.anotar(archivo, jobs.lineas.get(piden[0], 1),
+                        f"job `{piden[0]}` declara salidas `pedir*`, pero el workflow no tiene el job `estado` "
+                        f"que las publica en el artefacto `cadena`")
+            return
+        linea = jobs.lineas.get("estado", estado.linea)
+        faltan = sorted(set(jobs) - {"estado"} - {str(n) for n in _lista(estado.get("needs"))})
+        if faltan:
+            self.anotar(archivo, linea, f"job `estado`: sus `needs` no incluyen a {', '.join(f'`{f}`' for f in faltan)}; "
+                                        f"tiene que depender de todos los demás jobs")
+        if "always()" not in str(estado.get("if", "")):
+            self.anotar(archivo, linea, "job `estado`: sin `if: always()` no corre cuando otro job falla y sus peticiones se pierden")
+        sube = any(str(_mapa(p).get("uses", "")).startswith("actions/upload-artifact@")
+                   and str(_mapa(_mapa(p).get("with")).get("name", "")) == "cadena"
+                   for p in _lista(estado.get("steps")))
+        if not sube:
+            self.anotar(archivo, linea, "job `estado`: no sube el artefacto `cadena` (`actions/upload-artifact` con `name: cadena`)")
+
 
 def main(argv: list[str] | None = None) -> int:
-    analizador = argparse.ArgumentParser(description="Lint de rutas, lanzamientos, needs y tiempos de los workflows.")
+    analizador = argparse.ArgumentParser(description="Lint de rutas, lanzamientos, peticiones, needs y tiempos de los workflows.")
     analizador.add_argument("raiz", help="raíz del repo")
     analizador.add_argument("--hermanos", default=None,
                             help="carpeta con otros repos de la organización, para comprobar rutas que caen en ellos")
     analizador.add_argument("--repo", default=None, help="DUEÑO/NOMBRE de este repo (por omisión, el de su remoto)")
+    analizador.add_argument("--lanzador", action="store_true",
+                            help="este repo es el lanzador: puede lanzar corridas (por omisión, solo el que se llama `supervisor`)")
     args = analizador.parse_args(argv)
     raiz = Path(args.raiz)
     if not (raiz / ".github" / "workflows").is_dir():
         print(f"{raiz}: no tiene .github/workflows", file=sys.stderr)
         return 2
-    hallazgos = Lint(raiz, args.hermanos, args.repo).correr()
+    hallazgos = Lint(raiz, args.hermanos, args.repo, lanzador=True if args.lanzador else None).correr()
     for archivo, linea, mensaje in hallazgos:
         print(f"{archivo}:{linea}: {mensaje}")
     return 1 if hallazgos else 0

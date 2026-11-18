@@ -253,24 +253,20 @@ H_422 = {"huella": "bbbbbbbbbbbb", "repo": FE, "workflow": "vigilar.yml", "job":
 LANZA = 'run: gh workflow run vigilar.yml -f docs="$DOCS" -f lote=8\n'
 
 
-def test_un_lanzamiento_roto_con_poder_solo_pierde_o_renombra_campos(juzgar):
-    """El HTTP 422: `gh workflow run` con un input que el workflow no declara."""
+def test_un_lanzamiento_roto_no_se_arregla_retocandolo(juzgar):
+    """El HTTP 422 (`gh workflow run` con un input que el workflow no declara) ya no se corrige quitando el
+    campo: un workflow no lanza, así que la línea corregida sigue marcada por el lint."""
     wf = ".github/workflows/vigilar.yml"
     cambio = lambda nueva: {wf: con(CON_422[wf], LANZA, nueva)}  # noqa: E731
-    assert juzgar(cambio('run: gh workflow run vigilar.yml -f docs="$DOCS"\n'), base=CON_422, huella=H_422).fallas == []
-    # Renombrar la clave a un input que sí existe, con el mismo valor.
-    r = juzgar(cambio('run: gh workflow run vigilar.yml -f docs="$DOCS" -f docs=8\n'), base=CON_422, huella=H_422)
-    assert r.de("poder") == []
-    # A uno que tampoco existe: el lint lo sigue marcando.
-    r = juzgar(cambio('run: gh workflow run vigilar.yml -f docs="$DOCS" -f tanda=8\n'), base=CON_422, huella=H_422)
-    assert any("el lint sigue marcando" in d for d in r.de("poder"))
+    for nueva in ('run: gh workflow run vigilar.yml -f docs="$DOCS"\n',
+                  'run: gh workflow run vigilar.yml -f docs="$DOCS" -f docs=8\n',
+                  'run: gh workflow run vigilar.yml -f docs="$DOCS" -f tanda=8\n'):
+        r = juzgar(cambio(nueva), base=CON_422, huella=H_422)
+        assert any("el lint sigue marcando" in d for d in r.de("poder")), nueva
     # Ni otro valor, ni otra orden pegada, ni otro repo, ni otro workflow que sí existe.
     otro = CON_422 | {".github/workflows/otro.yml": CON_422[wf]}
     r = juzgar({wf: con(CON_422[wf], LANZA, 'run: gh workflow run otro.yml -f docs="$DOCS"\n')}, base=otro, huella=H_422)
     assert any("solo puede cambiar la carpeta" in d for d in r.de("poder"))
-    mal_nombre = {wf: con(CON_422[wf], LANZA, 'run: gh workflow run vigila.yml -f docs="$DOCS"\n')}
-    bien = {wf: con(CON_422[wf], LANZA, 'run: gh workflow run vigilar.yml -f docs="$DOCS"\n')}
-    assert juzgar(bien, base=mal_nombre, huella=H_422).fallas == []
     for nueva in ('run: gh workflow run vigilar.yml -f docs="$OTRA"\n',
                   'run: gh workflow run vigilar.yml -f docs="$DOCS" && gh gist create x\n',
                   'run: gh workflow run vigilar.yml -R otra/org -f docs="$DOCS"\n',
