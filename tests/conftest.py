@@ -70,6 +70,8 @@ def cadenas():
     # cadenas.toml: I1–I8 e I11 encendidos; I9 e I10 se prueban llamándolos.
     c = _cadenas.cargar()
     c.invariantes.update({k: k not in ("I9", "I10") for k in c.invariantes})
+    # Ni de si el agente de infraestructura ya está encendido.
+    c.reparacion["activa"] = True
     return c
 
 

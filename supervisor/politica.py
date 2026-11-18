@@ -211,6 +211,16 @@ def fuera_de_alcance(cadenas: Cadenas, reg: dict) -> str | None:
         return "no hay agente de infraestructura declarado"
     if cadenas.alcance(reg.get("repo")) is None:
         return f"{reg.get('repo')} está fuera del alcance del agente de infraestructura"
+    return None
+
+
+def _sin_agente(cadenas: Cadenas, reg: dict) -> str | None:
+    """Por qué la política no lanza al agente para esta huella."""
+    fuera = fuera_de_alcance(cadenas, reg)
+    if fuera:
+        return fuera
+    if not cadenas.reparacion.get("activa", False):
+        return "el agente de infraestructura está apagado ([reparacion].activa)"
     if not reg.get("workflow"):
         return "la huella no es la falla de un workflow"
     return None
@@ -257,7 +267,7 @@ def _lanzar_reparacion(v: _Vuelta, d: Decision, accion: str, inputs: dict, motiv
 def _agente(v: _Vuelta, d: Decision, motivo: str) -> Decision:
     """Lanza reparar-infra para la huella, con sus topes."""
     reg, pol = d.registro, v.cadenas.politica
-    fuera = fuera_de_alcance(v.cadenas, reg)
+    fuera = _sin_agente(v.cadenas, reg)
     if fuera:
         return _agotar(d, fuera)
     if reg.get("bloqueo"):

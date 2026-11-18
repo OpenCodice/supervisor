@@ -122,6 +122,10 @@ es confiable. El diseño supone que al agente se le puede engañar y lo contiene
    revert limpio, falla cerrado: `reversion-fallida` y la huella queda `agotada`). Un arreglo revertido
    cuenta su intento, y doble si rompió algo anterior; la siguiente sesión recibe su parche fallido.
 
+**Interruptor**: `[reparacion].activa` de `cadenas.toml`. Apagado, la política no lanza al agente y una
+huella determinista solo deja su constancia (`agotada`, con ese motivo); al encenderlo, la toma. Un
+ensayo a mano no depende de él.
+
 **Topes**: 2 intentos por huella (caducan a los 28 días), 3 sesiones al día, una sola `reparar-infra` a
 la vez. Una huella fuera del alcance (este repo, las webs, los repos de datos) queda `agotada` sin
 gastar sesión. El supervisor no se repara a sí mismo.

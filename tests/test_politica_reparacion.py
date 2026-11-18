@@ -158,6 +158,25 @@ def test_fuera_de_alcance_queda_agotada_sin_gastar_sesion(cadenas, foto_sana, mu
     assert d.accion == "agotada" and "fuera del alcance" in d.motivo and mundo.cliente.lanzamientos() == []
 
 
+def test_con_el_agente_apagado_solo_queda_constancia_y_al_encenderlo_la_toma(cadenas, foto_sana, mundo, tmp_path):
+    import dataclasses
+
+    from supervisor.actuar import Actor
+    from supervisor.__main__ import correr
+    from supervisor.estado import Estado
+    wf = cadenas.workflow(FE, VLE)
+    foto = foto_sana((FE, rota(5, wf)), (FE, rota(3, wf)))
+    apagado = dataclasses.replace(cadenas, reparacion=cadenas.reparacion | {"activa": False})
+    estado = Estado(mundo.carpeta)
+    r = correr(foto, apagado, estado, AHORA, Actor(mundo.cliente, apagado, "actuar"))
+    estado.guardar()
+    [d] = [x for x in r["decisiones"] if x.hallazgo and x.hallazgo.invariante == "I2"]
+    assert (d.accion, d.motivo) == ("agotada", "el agente de infraestructura está apagado ([reparacion].activa)")
+    assert mundo.cliente.lanzamientos() == [] and mundo.cliente.issues == 1
+    d = huella_de(mundo.vuelta(foto, minutos(15)), mundo)
+    assert d.accion == "agente" and reparaciones(mundo) == [(REPARAR, {"huella": d.huella, "origen": "supervisor"})]
+
+
 # --------------------------------------------------------------------------
 # Vigilar el arreglo
 # --------------------------------------------------------------------------
