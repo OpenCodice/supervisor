@@ -203,7 +203,7 @@ def test_anotar_el_intento_convive_con_el_reconciliador(tmp_path):
     acciones = [json.loads(l) for l in cabeza(remoto, "estado/acciones.jsonl").splitlines()]
     assert [a["accion"] for a in acciones] == ["lanzar", "agente", "intento-iniciado"]
     assert acciones[-1]["huella"] == H and acciones[-1]["resultado"] == "ok"
-    assert "opencodice-ci" in git(remoto, "log", "-1", "--format=%an", "main")
+    assert "Claude (agente OpenCodice)" in git(remoto, "log", "-1", "--format=%an", "main")
     # Y el reconciliador lo cuenta como un intento gastado.
     from supervisor import cadenas as _c
     from supervisor import politica
@@ -360,7 +360,7 @@ def test_publicar_sobre_un_main_que_avanzo_sin_chocar(tmp_path, afectado, parche
     assert hecho["archivos"] == [VLE] and cabeza(afectado) == hecho["commit"]
     assert cabeza(afectado, VLE) == DESPUES and cabeza(afectado, "README.md") == "otro cambio\n"
     autor, titulo_, cuerpo = git(afectado, "log", "-1", "--format=%an <%ae>%n%s%n%b", "main").split("\n", 2)
-    assert autor == "opencodice-ci <opencodice-ci@users.noreply.github.com>"
+    assert autor == "Claude (agente OpenCodice) <noreply@anthropic.com>"
     assert titulo_ == f"Reparación automática de infraestructura: {REG['paso']} ({H})"
     assert "Causa: la ruta." in cuerpo and "Claude" not in cuerpo and "Co-Authored" not in cuerpo
     assert git(afectado, "show", "--stat", "--format=", "main").count("|") == 1

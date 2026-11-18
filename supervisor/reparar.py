@@ -35,7 +35,8 @@ from .observar import Cliente, ErrorApi, cola_del_paso, recortar_corrida, recort
 
 RAIZ = _cadenas.RAIZ
 AGENTE = RAIZ / "scripts" / "agente"
-AUTOR = ("opencodice-ci", "opencodice-ci@users.noreply.github.com")
+# Los arreglos que escribe el agente llevan su autoría, no la de una persona.
+AUTOR = ("Claude (agente OpenCodice)", "noreply@anthropic.com")
 VEREDICTOS = ("arreglo", "no-es-infra", "no-puedo")
 # Lo que el juez tiene que contestar para que el arreglo siga.
 JUEZ_ESPERADO = {"arregla_la_causa": "si", "cambia_algo_innecesario": "no", "riesgo": "no"}

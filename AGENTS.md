@@ -164,7 +164,7 @@ es confiable. El diseño supone que al agente se le puede engañar y lo contiene
    no) deja pasar. Un veredicto ausente o mal formado descarta.
 5. `publicar` (determinista; `SUPERVISOR_TOKEN`): aplica el parche con `git apply` sobre un clon limpio
    de main (si no aplica limpio, descarta), repite las compuertas que solo leen, hace el commit
-   «Reparación automática de infraestructura: <paso> (<huella>)» como `opencodice-ci`, lo sube con
+   «Reparación automática de infraestructura: <paso> (<huella>)» con autoría `Claude (agente OpenCodice)`, lo sube con
    rebase y tres intentos, anota `arreglo-publicado` y relanza la corrida que falló con sus inputs (con
    la regla del único lanzador; si el grupo está ocupado, la lanza el reconciliador después). En
    cualquier otro final anota `descartado` con su motivo. Comenta el resultado en el issue.
