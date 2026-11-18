@@ -419,7 +419,7 @@ workflow = "reparar-infra.yml"
 # Apagado, la política no lanza al agente: una huella determinista queda
 # `agotada` con ese motivo (constancia en un issue) y, al encenderlo, la toma.
 # Un ensayo a mano (`-f ensayo=true`) no depende de esto.
-activa = false
+activa = true
 max_archivos = 4
 max_lineas = 120
 # En un job con secretos o con permiso de escritura, líneas de `run:` que el
