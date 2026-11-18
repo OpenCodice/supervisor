@@ -1,12 +1,12 @@
 {
   "acciones": {},
-  "cuando": "2026-11-18T11:45:43Z",
+  "cuando": "2026-11-18T11:47:06Z",
   "huellas_abiertas": 2,
   "invariantes": {
     "I1": "ok",
     "I10": "apagada",
     "I11": "ok",
-    "I2": "ok",
+    "I2": "rota:2",
     "I3": "ok",
     "I4": "ok",
     "I5": "ok",
@@ -16,12 +16,5 @@
     "I9": "ok"
   },
   "modo": "actuar",
-  "sin_observar": [
-    "congreso-extractor",
-    "constitucion-extractor",
-    "constitucion-web",
-    "fiscal-extractor",
-    "fiscal-web",
-    "supervisor"
-  ]
+  "sin_observar": []
 }
