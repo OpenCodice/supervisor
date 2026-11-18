@@ -285,8 +285,7 @@ def test_i11_rojo_cronico_en_workflows_sin_dueno(cadenas, foto_sana):
     assert not _solo(inv.evaluar(foto_sana(*rojas, verde), cadenas, AHORA), "I11")
 
 
-def test_i9_e_i10_declaradas_y_apagadas(cadenas, foto_sana):
-    assert not cadenas.encendido("I9") and not cadenas.encendido("I10")
+def test_i9_e_i10_declaradas(cadenas, foto_sana):
     assert {"I9", "I10"} <= set(inv.INVARIANTES)
     foto = foto_sana()
     foto["repos"]["supervisor"] = {"observable": True, "corridas": [], "ultima_exitosa": {}}

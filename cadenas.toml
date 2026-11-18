@@ -19,9 +19,11 @@ I3 = true    # nada se pierde en la cola
 I4 = true    # nada se atora
 I5 = true    # ningún PR automático queda abierto
 I6 = true    # trabajo pendiente declarado
-I7 = true    # extractor nuevo ⇒ reintento
+# Apagado mientras `reparar` relance su vigilancia: encendido, además, cada
+# arreglo del extractor lanzaría una vigilancia federal completa.
+I7 = false   # extractor nuevo ⇒ reintento
 I8 = true    # la web está al día
-I9 = false   # los relojes viven: se enciende cuando el Worker lance supervisor.yml
+I9 = true    # los relojes viven
 I10 = false  # los Workers avanzan: falta GET /salud en congreso-archivo
 I11 = true   # rojo crónico
 
