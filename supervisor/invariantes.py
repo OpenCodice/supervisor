@@ -11,6 +11,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 
 from . import huella as _huella
+from .cadenas import DIAS as _DIAS
 from .cadenas import Cadenas, Workflow
 
 EN_ESPERA = {"queued", "pending", "waiting", "requested"}
@@ -19,7 +20,6 @@ FALLAS = {"failure", "timed_out", "startup_failure"}
 _TITULO = re.compile(r"^(?P<wf>[a-z0-9-]+)(?P<pares>(?: [a-z_]+=\[[^\]]*\])*)$")
 _PAR = re.compile(r" ([a-z_]+)=\[([^\]]*)\]")
 _ESTADO = re.compile(r"^estado pendiente=\[(true|false)\]$")
-_DIAS = {"lun": 0, "mar": 1, "mie": 2, "jue": 3, "vie": 4, "sab": 5, "dom": 6}
 
 
 @dataclass
@@ -318,9 +318,8 @@ def necesitan_jobs(foto: dict, cadenas: Cadenas, en_prueba: tuple = ()) -> dict[
                 if not cubierta:
                     ids.append(c["id"])
             if wf.encadenado:
-                buenas = [c for c in todas if exitosa(c)]
-                if buenas:
-                    ids.append(buenas[-1]["id"])
+                # El job `estado` de la última exitosa y de las que ninguna posterior abarca.
+                ids += [c["id"] for c in [*_exitosas_vigentes(todas, wf), *[c for c in todas if exitosa(c)][-1:]]]
         for otro, archivo, desde in en_prueba:
             if otro == repo:
                 ids += [c["id"] for c in por_archivo.get(archivo, [])
@@ -329,8 +328,24 @@ def necesitan_jobs(foto: dict, cadenas: Cadenas, en_prueba: tuple = ()) -> dict[
     return pedir
 
 
+def _exitosas_vigentes(todas: list[dict], wf: Workflow) -> list[dict]:
+    """Corridas exitosas cuyo trabajo no abarca ninguna posterior: lo que declararon sigue valiendo."""
+    return [c for c in todas if exitosa(c) and not any(
+        cuenta_como_posterior(p) and abarca(inputs_de(p, wf), inputs_de(c, wf), wf) for p in _posteriores(todas, c))]
+
+
+def pr_abierto_de(foto: dict, cadenas: Cadenas, repo: str, archivo: str) -> tuple[str, int] | None:
+    """(repo de datos, número) de un PR automático abierto que abre ese workflow."""
+    for d in cadenas.datos:
+        for pr in foto.get("datos", {}).get(d["repo"], {}).get("prs", []):
+            regla = regla_pr(cadenas, d["repo"], pr)
+            if regla and not pr.get("cross") and (regla["vigilancia"]["repo"], regla["vigilancia"]["archivo"]) == (repo, archivo):
+                return d["repo"], pr["number"]
+    return None
+
+
 # --------------------------------------------------------------------------
-# I1 — Cadencia
+# I1 — Cadencia y horario
 # --------------------------------------------------------------------------
 
 def _cumple_cadencia(c: dict, wf: Workflow, cadencia: dict) -> bool:
@@ -347,7 +362,10 @@ def _cumple_cadencia(c: dict, wf: Workflow, cadencia: dict) -> bool:
 
 
 def _ultima_cita(horario: tuple[dict, ...], ahora: datetime) -> tuple[datetime, dict] | None:
-    """La hora más reciente (≤ ahora) en que tocaba lanzar, y con qué inputs."""
+    """La hora más reciente (≤ ahora) en que tocaba lanzar, y con qué inputs.
+
+    Solo la más reciente: lo que no se lanzó a su hora no se acumula.
+    """
     mejor = None
     for entrada in horario:
         hora, minuto = entrada["hora"].split(":")
@@ -357,15 +375,57 @@ def _ultima_cita(horario: tuple[dict, ...], ahora: datetime) -> tuple[datetime, 
         cita = ahora.replace(minute=int(minuto), second=0, microsecond=0)
         if not cada_hora:
             cita = cita.replace(hour=int(hora))
-        # Ocho días (u ocho días de horas) hacia atrás alcanzan cualquier día de la semana.
-        for _ in range(8 * 24 if cada_hora else 8):
-            if cita <= ahora and ("*" in dias or cita.weekday() in {_DIAS[d] for d in dias}):
+        # Hacia atrás hasta el día que toca: ocho días para uno de la semana, 32 para uno del mes.
+        vueltas = 32 if "dia_mes" in entrada else 8
+        for _ in range(vueltas * 24 if cada_hora else vueltas):
+            toca = "*" in dias or cita.weekday() in {_DIAS[d] for d in dias}
+            if "dia_mes" in entrada:
+                toca = toca and cita.day == entrada["dia_mes"]
+            if cita <= ahora and toca:
                 # A la misma hora, la entrada con hora fija manda sobre la de cada hora.
                 if mejor is None or (cita, not cada_hora) > (mejor[0], mejor[2]):
                     mejor = (cita, entrada, not cada_hora)
                 break
             cita -= paso
     return (mejor[0], mejor[1]) if mejor else None
+
+
+def _por_horario(foto: dict, cadenas: Cadenas, wf: Workflow, todas: list[dict], ahora: datetime) -> Hallazgo | None:
+    """Lo que tocaba lanzar a su hora y todavía no tiene corrida."""
+    cita = _ultima_cita(wf.horario, ahora)
+    if cita is None:
+        return None
+    momento, entrada = cita
+    # Quien espera a que otra cadena quede libre no pierde su turno: vale hasta la cita siguiente.
+    tolerancia = timedelta(minutes=cadenas.politica.get("tolerancia_horario_min", 180))
+    if not wf.espera_libre and ahora - momento > tolerancia:
+        return None
+    filtro = {k: str(v) for k, v in entrada.get("inputs", {}).items()}
+    objetivo = {k: filtro.get(k, wf.valor_omision(k)) for k in wf.inputs}
+    for c in todas:
+        ins = inputs_de(c, wf)
+        if es_manual(ins, wf) or not (abarca(ins, objetivo, wf) if ins is not None else not filtro):
+            continue
+        # Ya tiene su corrida: una creada desde su hora, o una anterior que sigue esperando su turno.
+        if instante(c["created_at"]) >= momento - timedelta(minutes=2) or en_espera(c):
+            return None
+    ocupada = None
+    for otro in wf.espera_libre:
+        vivas = [c for c in corridas_de(foto, wf.repo, otro) if viva(c)]
+        pr = pr_abierto_de(foto, cadenas, wf.repo, otro)
+        if vivas:
+            ocupada = f"{otro} tiene la corrida {vivas[-1]['id']} en curso o en espera"
+        elif pr:
+            ocupada = f"el PR #{pr[1]} de {pr[0]}, que abre {otro}, sigue abierto"
+        if ocupada:
+            break
+    return Hallazgo(
+        invariante="I1", repo=wf.repo, workflow=wf.archivo,
+        objeto=f"{wf.repo}/{wf.archivo}@{iso(momento)}",
+        motivo=f"tocaba lanzarlo a las {iso(momento)}",
+        inputs=objetivo, base=f"horario-{iso(momento)}", cuando=iso(momento),
+        extra={"horario": iso(momento)} | ({"ocupada": ocupada} if ocupada else {}),
+    )
 
 
 def i1(foto: dict, cadenas: Cadenas, ahora: datetime) -> list[Hallazgo]:
@@ -397,21 +457,9 @@ def i1(foto: dict, cadenas: Cadenas, ahora: datetime) -> list[Hallazgo]:
                 en_vuelo=vivas[-1]["id"] if vivas else None,
             ))
         if wf.lanza_horario and wf.horario:
-            cita = _ultima_cita(wf.horario, ahora)
-            tolerancia = timedelta(minutes=cadenas.politica.get("tolerancia_horario_min", 180))
-            if cita is None or ahora - cita[0] > tolerancia:
-                continue
-            momento, entrada = cita
-            if any(instante(c["created_at"]) >= momento - timedelta(minutes=2) for c in todas):
-                continue
-            filtro = {k: str(v) for k, v in entrada.get("inputs", {}).items()}
-            hallazgos.append(Hallazgo(
-                invariante="I1", repo=wf.repo, workflow=wf.archivo,
-                objeto=f"{wf.repo}/{wf.archivo}@{iso(momento)}",
-                motivo=f"tocaba lanzarlo a las {iso(momento)}",
-                inputs={k: filtro.get(k, wf.valor_omision(k)) for k in wf.inputs},
-                base=f"horario-{iso(momento)}", cuando=iso(momento),
-            ))
+            cita = _por_horario(foto, cadenas, wf, todas, ahora)
+            if cita is not None:
+                hallazgos.append(cita)
     return hallazgos
 
 
@@ -582,23 +630,20 @@ def i6(foto: dict, cadenas: Cadenas, ahora: datetime) -> list[Hallazgo]:
         if not wf.encadenado:
             continue
         todas = corridas_de(foto, wf.repo, wf.archivo)
-        buenas = [c for c in todas if exitosa(c)]
-        if not buenas:
-            continue
-        ultima = buenas[-1]
-        ins = inputs_de(ultima, wf)
-        if pendiente_de(ultima) is not True or es_manual(ins, wf):
-            continue
-        if any(cuenta_como_posterior(p) and abarca(inputs_de(p, wf), ins, wf)
-               for p in _posteriores(todas, ultima)):
-            continue
-        hallazgos.append(Hallazgo(
-            invariante="I6", repo=wf.repo, workflow=wf.archivo,
-            objeto=f"{wf.repo}/{wf.archivo}#{ultima['id']}",
-            motivo=f"la corrida {ultima['id']} declaró trabajo pendiente y no hay otra después",
-            inputs=ins, relanzable=relanzable(ins, wf), base=str(ultima["id"]),
-            cuando=iso(fin(ultima)), corridas=[ultima["id"]],
-        ))
+        pr = pr_abierto_de(foto, cadenas, wf.repo, wf.archivo)
+        for c in _exitosas_vigentes(todas, wf):
+            ins = inputs_de(c, wf)
+            if pendiente_de(c) is not True or es_manual(ins, wf):
+                continue
+            hallazgos.append(Hallazgo(
+                invariante="I6", repo=wf.repo, workflow=wf.archivo,
+                objeto=f"{wf.repo}/{wf.archivo}#{c['id']}",
+                motivo=f"la corrida {c['id']} declaró trabajo pendiente y no hay otra después",
+                inputs=ins, relanzable=relanzable(ins, wf), base=str(c["id"]),
+                cuando=iso(fin(c)), corridas=[c["id"]],
+                # La tanda siguiente parte de lo que publicó esta: su PR tiene que estar fusionado.
+                extra={"pr_abierto": list(pr)} if pr else {},
+            ))
     return hallazgos
 
 
@@ -661,6 +706,9 @@ def i8(foto: dict, cadenas: Cadenas, ahora: datetime) -> list[Hallazgo]:
         return []
     if ahora < fecha + timedelta(minutes=cadenas.politica.get("web_margen_min", 15)):
         return []
+    # Un despliegue posterior al commit que falló ya tiene dueño (I2, con sus esperas): aquí no se insiste.
+    if any(fallida(c) and inicio(c) >= fecha for c in despliegues):
+        return []
     vivos = [c for c in despliegues if viva(c)]
     return [Hallazgo(
         invariante="I8", repo=web["repo"], workflow=web["archivo"], objeto=web["repo"],
@@ -691,8 +739,29 @@ def i9(foto: dict, cadenas: Cadenas, ahora: datetime) -> list[Hallazgo]:
 
 
 def i10(foto: dict, cadenas: Cadenas, ahora: datetime) -> list[Hallazgo]:
-    # Necesita GET /salud en el Worker congreso-archivo, que todavía no existe.
-    return []
+    """Un sitio de un Worker con pendientes viejas y sin un éxito reciente está atorado."""
+    hallazgos = []
+    limite = timedelta(hours=cadenas.politica.get("worker_pendiente_max_h", 6))
+    for worker in cadenas.workers:
+        leido = foto.get("workers", {}).get(worker["nombre"]) or {}
+        if not leido.get("observable"):
+            continue
+        for host, sitio in sorted(leido.get("sitios", {}).items()):
+            antigua, exito = instante(sitio.get("pendiente_mas_antigua")), instante(sitio.get("ultimo_exito"))
+            if not sitio.get("pendientes") or antigua is None or ahora - antigua <= limite:
+                continue
+            if exito is not None and ahora - exito <= limite:
+                continue
+            hallazgos.append(Hallazgo(
+                invariante="I10", repo=worker.get("repo") or worker["nombre"], workflow=None,
+                objeto=f"{worker['nombre']}/{host}",
+                motivo=(f"{sitio['pendientes']} páginas pendientes de {host}, la más antigua desde "
+                        f"{sitio['pendiente_mas_antigua']}, y "
+                        + (f"su último éxito fue {sitio['ultimo_exito']}" if exito else "sin ningún éxito registrado")),
+                relanzable=False, base=host, cuando=sitio["pendiente_mas_antigua"],
+                extra={"worker": worker["nombre"]},
+            ))
+    return hallazgos
 
 
 # --------------------------------------------------------------------------
@@ -730,8 +799,120 @@ def i11(foto: dict, cadenas: Cadenas, ahora: datetime) -> list[Hallazgo]:
     return hallazgos
 
 
+# --------------------------------------------------------------------------
+# I12 — Toda petición se atiende
+# --------------------------------------------------------------------------
+
+def _empezo_despues(x: dict, wf_x: Workflow, c: dict, wf_c: Workflow) -> bool:
+    """¿La corrida `x` empezó a trabajar después de que terminó `c`?"""
+    # En el mismo grupo de concurrency corren de una en una: la creada después empieza después,
+    # aunque se haya creado mientras `c` seguía en curso.
+    if wf_x.repo == wf_c.repo and not wf_x.cancela_en_curso:
+        grupo = wf_x.grupo_de(inputs_de(x, wf_x))
+        if grupo and grupo == wf_c.grupo_de(None if wf_c.solo_grupo else inputs_de(c, wf_c)):
+            return (x["created_at"], x["id"]) > (c["created_at"], c["id"])
+    return inicio(x) >= fin(c)
+
+
+def i12(foto: dict, cadenas: Cadenas, ahora: datetime) -> list[Hallazgo]:
+    hallazgos = []
+    pendientes: dict[tuple, list[tuple[dict, dict]]] = {}
+    for repo in foto.get("repos", {}):
+        for c in corridas_de(foto, repo):
+            origen = cadenas.workflow(repo, archivo_de(c))
+            if origen is None or c.get("status") != "completed":
+                continue
+            if not origen.solo_grupo and es_manual(inputs_de(c, origen), origen):
+                continue
+
+            def rechazar(p: dict, motivo: str) -> None:
+                hallazgos.append(Hallazgo(
+                    invariante="I12", repo=repo, workflow=origen.archivo,
+                    objeto=f"{repo}/{origen.archivo}#{c['id']}:{p['job']}.{p['salida']}",
+                    motivo=f"la corrida {c['id']} dejó una petición que no se atiende: {motivo}",
+                    relanzable=False, base=str(c["id"]), cuando=iso(fin(c)), corridas=[c["id"]],
+                    extra={"rechazada": motivo},
+                ))
+
+            for p in c.get("peticiones_invalidas", []):
+                rechazar(p, f"la salida `{p['salida']}` del job `{p['job']}` está mal formada ({p['motivo']})")
+            for p in c.get("peticiones", []):
+                destino_repo = p.get("repo") or repo
+                destino = cadenas.workflow(destino_repo, p["workflow"])
+                nombre = f"{destino_repo}/{p['workflow']}"
+                if destino is None or destino.solo_grupo:
+                    rechazar(p, f"`{nombre}` no es un workflow declarado que el supervisor lance")
+                    continue
+                if not cadenas.pedible(origen, destino_repo, p["workflow"]):
+                    rechazar(p, f"`{origen.archivo}` no tiene a `{nombre}` en su `puede_pedir`")
+                    continue
+                pedidos = {k: v for k, v in p["inputs"].items() if k != "origen"}
+                sobran = sorted(set(pedidos) - set(destino.inputs))
+                if sobran:
+                    rechazar(p, f"`{nombre}` no declara los inputs {sobran}")
+                    continue
+                ins = {k: pedidos.get(k, destino.valor_omision(k)) for k in destino.inputs}
+                if es_manual(ins, destino):
+                    rechazar(p, f"pide `{nombre}` con inputs de prueba a mano")
+                    continue
+                if any(cuenta_como_posterior(x) and abarca(inputs_de(x, destino), ins, destino)
+                       and _empezo_despues(x, destino, c, origen)
+                       for x in corridas_de(foto, destino_repo, destino.archivo) if x["id"] != c["id"]):
+                    continue
+                pendientes.setdefault((destino_repo, destino.archivo, _escalares(ins, destino)), []).append((c, ins))
+    for (destino_repo, archivo, escalares), grupo in pendientes.items():
+        destino = cadenas.workflow(destino_repo, archivo)
+        unidos = unir([ins for _, ins in grupo], destino)
+        ids = sorted({c["id"] for c, _ in grupo})
+        ultima = max((c for c, _ in grupo), key=fin)
+        pr = pr_abierto_de(foto, cadenas, destino_repo, archivo)
+        pedido = " ".join(f"{k}={v}" for k, v in para_lanzar(unidos, destino).items()) or "sin inputs"
+        hallazgos.append(Hallazgo(
+            invariante="I12", repo=destino_repo, workflow=archivo,
+            objeto=f"{destino_repo}/{archivo}" + "".join(f" {e}" for e in escalares if e) + f"<-{ids[-1]}",
+            motivo=(f"pedido por {', '.join(map(str, ids))} ({pedido}) y ninguna corrida que lo abarque empezó después"),
+            inputs=unidos, base=",".join(map(str, ids)), cuando=iso(fin(ultima)), corridas=ids,
+            extra={"pr_abierto": list(pr)} if pr else {},
+        ))
+    return hallazgos
+
+
+# --------------------------------------------------------------------------
+# Lo que no se pudo observar
+# --------------------------------------------------------------------------
+
+def sin_observar(foto: dict, cadenas: Cadenas) -> dict[str, str]:
+    """Por invariante, lo que le tocaba mirar y la foto no trae, con su motivo. «Sin observar» no es «ok»."""
+    vigilados = _vigilados(cadenas)
+    repos = {
+        "I1": [w.repo for w in vigilados if w.cadencias or (w.lanza_horario and w.horario)],
+        "I2": [w.repo for w in vigilados], "I3": [w.repo for w in vigilados],
+        "I4": [w.repo for w in cadenas.workflows],
+        "I6": [w.repo for w in vigilados if w.encadenado],
+        "I7": [w.repo for w in vigilados if w.extractor_nuevo],
+        "I8": [cadenas.web["repo"]] if cadenas.web else [],
+        "I9": [cadenas.general["repo_supervisor"]],
+        "I11": cadenas.repos_con_workflows(),
+        "I12": [w.repo for w in cadenas.workflows if w.encadenado or w.puede_pedir],
+    }
+    datos = {"I5": [d["repo"] for d in cadenas.datos if d.get("prs")], "I8": [d["repo"] for d in cadenas.datos]}
+    motivos = foto.get("motivos", {})
+    faltan: dict[str, str] = {}
+    for nombre in INVARIANTES:
+        ciegos = [r for r in dict.fromkeys(repos.get(nombre, [])) if not observable(foto, r)]
+        ciegos += [r for r in datos.get(nombre, []) if r not in foto.get("datos", {})]
+        if nombre == "I10":
+            ciegos += [w["nombre"] for w in cadenas.workers
+                       if not (foto.get("workers", {}).get(w["nombre"]) or {}).get("observable")]
+        if nombre == "I12":
+            ciegos += [m for m in motivos if m.endswith(" (artefactos)")]
+        if ciegos:
+            faltan[nombre] = "; ".join(f"{r}: {motivos.get(r, 'sin acceso')}" for r in dict.fromkeys(ciegos))
+    return faltan
+
+
 INVARIANTES = {"I1": i1, "I2": i2, "I3": i3, "I4": i4, "I5": i5, "I6": i6,
-               "I7": i7, "I8": i8, "I9": i9, "I10": i10, "I11": i11}
+               "I7": i7, "I8": i8, "I9": i9, "I10": i10, "I11": i11, "I12": i12}
 
 
 def evaluar(foto: dict, cadenas: Cadenas, ahora: datetime) -> list[Hallazgo]:

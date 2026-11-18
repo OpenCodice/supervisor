@@ -80,3 +80,20 @@ def test_el_eco_del_script_no_es_la_firma():
         "2026-11-18T10:00:09.0Z ##[error]Process completed with exit code 1.",
     ])
     assert huella.firma(cola_del_paso(log, None, 40)) == "Process completed with exit code 1."
+
+
+# La corrida 44272219102 de actualizar-congreso: el paso que falló empieza y termina en el mismo segundo.
+PASO_CONGRESO = {"name": "Agente — leer las páginas que el parser no entendió (1)", "conclusion": "failure",
+                 "started_at": "2026-11-18T09:30:42Z", "completed_at": "2026-11-18T09:30:42Z"}
+
+
+def test_la_firma_no_arrastra_el_final_del_paso_anterior():
+    log = (FIXTURES / "log_job_actualizar_44272219102.txt").read_text(encoding="utf-8")
+    assert huella.firma(cola_del_paso(log, PASO_CONGRESO, 40)) == "Process completed with exit code 1."
+    # Si lo último que dijo el paso anterior cae en ese mismo segundo, tampoco entra: cambia de una
+    # corrida a otra («254 páginas», «194 páginas») y con él cambiaría la huella.
+    pegado = log.replace("2026-11-18T09:29:03.2104444Z 254 páginas", "2026-11-18T09:30:42.9000000Z 254 páginas")
+    assert pegado != log
+    assert huella.firma(cola_del_paso(pegado, PASO_CONGRESO, 40)) == "Process completed with exit code 1."
+    # Sin las horas del paso se parte igual del encabezado del paso que falló.
+    assert huella.firma(cola_del_paso(log, None, 40)) == "Process completed with exit code 1."

@@ -6,6 +6,13 @@ Módulo puro. Decide; no ejecuta. Cada decisión trae el registro de su huella
 Acciones: nada, esperar, lanzar, revisar-pr, cerrar-pr, cancelar-y-relanzar,
 desplegar-web, agotada, agente, revertir.
 
+Todo lo que termina en un dispatch pasa por `_lanzar`: lo que toca por horario
+(I1), lo que pidió una corrida (I12), la tanda pendiente (I6), los reintentos
+(I2, I3). Una petición no caduca mientras la corrida que la hizo siga en la
+foto: espera su lugar en el grupo y se lanza cuando queda libre. Cuando esa
+corrida sale de la ventana, la petición deja de verse y la retoma la vuelta
+completa de la cadencia semanal.
+
 Una huella determinista pasa por: abierta → en-reparacion (se lanzó
 reparar-infra) → arreglo-publicado (se vigila su corrida de prueba) → resuelta,
 o → revertido (y, si le quedan intentos, otra vez al agente). Lo que hace
@@ -29,7 +36,7 @@ EJECUTABLES = LANZAN | {"cerrar-pr", "agotada"}
 # Lo que reparar-infra anota en acciones.jsonl y cambia el estado de una huella.
 EVENTOS = {"arreglo-publicado", "descartado", "revertido", "reversion-fallida"}
 EN_REPARACION = {"en-reparacion", "arreglo-publicado"}
-_ORDEN = ["I4", "I5", "I3", "I2", "I6", "I7", "I1", "I8", "I11", "I9", "I10"]
+_ORDEN = ["I4", "I5", "I3", "I12", "I2", "I6", "I7", "I1", "I8", "I11", "I9", "I10"]
 
 
 @dataclass
@@ -140,8 +147,10 @@ _DE_LA_REPARACION = ("reparacion", "arreglo", "reversion", "intentos_extra", "se
 
 def _lanzamientos_24h(v: _Vuelta, repo: str, archivo: str) -> int:
     desde = v.ahora - timedelta(hours=24)
+    # Lo lanzado por horario no cuenta: va una vez por cita, no puede ciclarse.
     previos = sum(1 for a in v.acciones
-                  if a.get("accion") in LANZAN and a.get("detalle", {}).get("repo") == repo
+                  if a.get("accion") in LANZAN and not a.get("detalle", {}).get("horario")
+                  and a.get("detalle", {}).get("repo") == repo
                   and a.get("detalle", {}).get("workflow") == archivo and instante(a["cuando"]) >= desde)
     return previos + sum(1 for r, a, _ in v.lanzados if (r, a) == (repo, archivo))
 
@@ -159,13 +168,14 @@ def _grupo_en_espera(v: _Vuelta, wf: Workflow, inputs: dict | None, salvo: int |
     return None
 
 
-def _puerta(v: _Vuelta, wf: Workflow, inputs: dict | None, salvo: int | None = None) -> tuple[str, str]:
+def _puerta(v: _Vuelta, wf: Workflow, inputs: dict | None, salvo: int | None = None,
+            por_horario: bool = False) -> tuple[str, str]:
     """¿Se puede lanzar este workflow ahora? (lanzar | nada | esperar | ciclo, motivo)."""
     for repo, archivo, lanzados in v.lanzados:
         if (repo, archivo) == wf.clave and inv.abarca(lanzados, inputs, wf):
             return "nada", "lo abarca otro lanzamiento de esta vuelta"
     tope = v.cadenas.politica.get("max_lanzamientos_24h", 12)
-    if _lanzamientos_24h(v, wf.repo, wf.archivo) >= tope:
+    if not por_horario and _lanzamientos_24h(v, wf.repo, wf.archivo) >= tope:
         return "ciclo", f"cortacircuitos: {tope} lanzamientos de {wf.archivo} en 24 h"
     ocupa = _grupo_en_espera(v, wf, inputs, salvo)
     if ocupa is not None:
@@ -503,6 +513,14 @@ def _lanzar(v: _Vuelta, d: Decision, wf: Workflow | None, espera_h: float, accio
         return d
     if wf is None or not h.relanzable:
         return _agotar(d, "no se puede relanzar: sus inputs no se conocen y el workflow no admite relanzarse sin ellos")
+    if h.extra.get("pr_abierto"):
+        repo_datos, numero = h.extra["pr_abierto"]
+        d.accion = "esperar"
+        d.motivo = f"el PR #{numero} de {repo_datos} sigue abierto: se lanza cuando se fusione (o cuando I5 lo cierre)"
+        return d
+    if h.extra.get("ocupada"):
+        d.accion, d.motivo = "esperar", f"se lanza cuando la cadena quede libre: {h.extra['ocupada']}"
+        return d
     if h.cuando:
         listo = instante(h.cuando) + timedelta(hours=espera_h)
         if ahora < listo:
@@ -521,7 +539,8 @@ def _lanzar(v: _Vuelta, d: Decision, wf: Workflow | None, espera_h: float, accio
             d.accion, d.motivo = "esperar", "ya se lanzó; se espera a que aparezca o termine la corrida"
             d.proxima = iso(instante(reg["ultima_accion"]) + pausa)
             return d
-    paso, motivo = _puerta(v, wf, h.inputs)
+    por_horario = bool(h.extra.get("horario"))
+    paso, motivo = _puerta(v, wf, h.inputs, por_horario=por_horario)
     if paso == "ciclo":
         _ciclo(v, wf, motivo)
         d.accion, d.motivo = "esperar", motivo
@@ -531,7 +550,7 @@ def _lanzar(v: _Vuelta, d: Decision, wf: Workflow | None, espera_h: float, accio
         return d
     _anotar_lanzamiento(v, wf, h.inputs)
     d.accion, d.motivo = accion, h.motivo
-    d.detalle = _detalle_lanzar(wf, h.inputs)
+    d.detalle = _detalle_lanzar(wf, h.inputs) | ({"horario": h.extra["horario"]} if por_horario else {})
     d.efecto = {"+lanzamientos": 1, "ultima_accion": iso(ahora)}
     return d
 
@@ -643,6 +662,9 @@ def _se_ve(foto: dict, reg: dict) -> bool:
     repo = reg.get("repo")
     if reg.get("invariante") == "I5":
         return repo in foto.get("datos", {})
+    if reg.get("invariante") == "I10":
+        worker = (reg.get("objeto") or "").split("/")[0]
+        return bool((foto.get("workers", {}).get(worker) or {}).get("observable"))
     return inv.observable(foto, repo)
 
 
@@ -660,6 +682,10 @@ def decidir(hallazgos: list[Hallazgo], huellas: dict, acciones: list, foto: dict
         wf = cadenas.workflow(h.repo, h.workflow) if h.workflow else None
         ident = identificar(h)
         clase = clasificar(h.falla, wf, cadenas) if h.invariante in ("I2", "I11") else None
+        if h.invariante == "I10":
+            clase = "determinista"
+        elif h.extra.get("rechazada"):
+            clase = "rechazada"
         d = Decision(huella=ident, accion="nada", motivo="", hallazgo=h, clase=clase)
         if ident in v.tratadas:
             d.accion, d.motivo = "esperar", f"la misma huella ya se trata en {v.tratadas[ident]}"
@@ -684,16 +710,24 @@ def decidir(hallazgos: list[Hallazgo], huellas: dict, acciones: list, foto: dict
             _lanzar(v, d, wf, 0, accion="desplegar-web")
         elif h.invariante == "I1":
             # Una falla del mismo workflow que espera su reintento manda: la cadencia no se salta esa espera.
-            dueno = next((o for o in decisiones if o.hallazgo is not None and o.accion == "esperar"
-                          and o.hallazgo.invariante in ("I2", "I3", "I6", "I7")
-                          and (o.hallazgo.repo, o.hallazgo.workflow) == (h.repo, h.workflow)
-                          and (o.hallazgo.inputs is None or inv.abarca(o.hallazgo.inputs, h.inputs, wf))), None)
+            # Lo que toca por horario no espera a nadie: cada cita se lanza a su hora.
+            dueno = None if h.extra.get("horario") else next((
+                o for o in decisiones if o.hallazgo is not None and o.accion == "esperar"
+                and o.hallazgo.invariante in ("I2", "I3", "I6", "I7", "I12")
+                and (o.hallazgo.repo, o.hallazgo.workflow) == (h.repo, h.workflow)
+                and (o.hallazgo.inputs is None or inv.abarca(o.hallazgo.inputs, h.inputs, wf))), None)
             if dueno is not None and not h.en_vuelo:
                 d.accion, d.motivo, d.proxima = "esperar", f"lo lleva la huella {dueno.huella}", dueno.proxima
             else:
                 _lanzar(v, d, wf, 0, repeticion_h=cadenas.politica.get("espera_cadencia_h", [1, 6, 24]))
-        elif h.invariante in ("I9", "I10"):
+        elif h.invariante == "I9":
             _agotar(d, h.motivo)
+        elif h.invariante == "I10":
+            # El motivo de la constancia no lleva las cuentas del sitio, que cambian en cada vuelta.
+            _agotar(d, "el sitio no avanza en el Worker: es un defecto del Worker, no la falla de una corrida, "
+                       "y el agente de infraestructura no lo toma")
+        elif h.extra.get("rechazada"):
+            _agotar(d, h.extra["rechazada"])
         else:
             _lanzar(v, d, wf, 0)
         decisiones.append(d)

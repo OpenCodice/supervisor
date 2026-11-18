@@ -1,0 +1,56 @@
+2026-11-18T09:27:58.8975565Z ##[group]Run python -m congreso senado --out ../repos/congreso-mexicano --legislatura "$LEG" > ../senado.json
+2026-11-18T09:27:58.8976562Z [36;1mpython -m congreso senado --out ../repos/congreso-mexicano --legislatura "$LEG" > ../senado.json[0m
+2026-11-18T09:27:58.8977445Z [36;1mpython -m congreso gaceta --out ../repos/congreso-mexicano --legislatura "$LEG" > ../gaceta.json[0m
+2026-11-18T09:27:58.9041910Z shell: /usr/bin/bash -e {0}
+2026-11-18T09:27:58.9042228Z env:
+2026-11-18T09:27:58.9042479Z   LEG: 66
+2026-11-18T09:27:58.9042719Z   PUBLICAR: si
+2026-11-18T09:27:58.9043005Z   CONGRESO_FALLOS: /tmp/fallos
+2026-11-18T09:27:58.9043437Z   pythonLocation: /opt/hostedtoolcache/Python/3.12.16/x64
+2026-11-18T09:27:58.9043991Z   PKG_CONFIG_PATH: /opt/hostedtoolcache/Python/3.12.16/x64/lib/pkgconfig
+2026-11-18T09:27:58.9044507Z   Python_ROOT_DIR: /opt/hostedtoolcache/Python/3.12.16/x64
+2026-11-18T09:27:58.9045005Z   Python2_ROOT_DIR: /opt/hostedtoolcache/Python/3.12.16/x64
+2026-11-18T09:27:58.9045555Z   Python3_ROOT_DIR: /opt/hostedtoolcache/Python/3.12.16/x64
+2026-11-18T09:27:58.9046042Z   LD_LIBRARY_PATH: /opt/hostedtoolcache/Python/3.12.16/x64/lib
+2026-11-18T09:27:58.9046709Z   CONGRESO_ARCHIVO: https://congreso-archivo.danielcardeenas.workers.dev
+2026-11-18T09:27:58.9047616Z   CONGRESO_ARCHIVO_TOKEN: ***
+2026-11-18T09:27:58.9047951Z ##[endgroup]
+2026-11-18T09:29:03.2104444Z 254 páginas pedidas al archivo
+2026-11-18T09:30:42.9543068Z ##[group]Run bash scripts/agente/leer.sh
+2026-11-18T09:30:42.9543367Z [36;1mbash scripts/agente/leer.sh[0m
+2026-11-18T09:30:42.9588784Z shell: /usr/bin/bash -e {0}
+2026-11-18T09:30:42.9589017Z env:
+2026-11-18T09:30:42.9589188Z   LEG: 66
+2026-11-18T09:30:42.9589365Z   PUBLICAR: si
+2026-11-18T09:30:42.9589557Z   CONGRESO_FALLOS: /tmp/fallos
+2026-11-18T09:30:42.9589829Z   pythonLocation: /opt/hostedtoolcache/Python/3.12.16/x64
+2026-11-18T09:30:42.9590192Z   PKG_CONFIG_PATH: /opt/hostedtoolcache/Python/3.12.16/x64/lib/pkgconfig
+2026-11-18T09:30:42.9590931Z   Python_ROOT_DIR: /opt/hostedtoolcache/Python/3.12.16/x64
+2026-11-18T09:30:42.9591263Z   Python2_ROOT_DIR: /opt/hostedtoolcache/Python/3.12.16/x64
+2026-11-18T09:30:42.9591569Z   Python3_ROOT_DIR: /opt/hostedtoolcache/Python/3.12.16/x64
+2026-11-18T09:30:42.9592064Z   LD_LIBRARY_PATH: /opt/hostedtoolcache/Python/3.12.16/x64/lib
+2026-11-18T09:30:42.9592740Z   CLAUDE_CODE_OAUTH_TOKEN: ***
+2026-11-18T09:30:42.9592958Z ##[endgroup]
+2026-11-18T09:30:42.9756605Z ##[error]Process completed with exit code 1.
+2026-11-18T09:30:42.9839249Z ##[group]Run actions/cache/save@v4
+2026-11-18T09:30:42.9839496Z with:
+2026-11-18T09:30:42.9839665Z   path: .cache
+2026-11-18T09:30:42.9839850Z   key: descargas-44272219102
+2026-11-18T09:30:42.9840079Z   enableCrossOsArchive: false
+2026-11-18T09:30:42.9840536Z env:
+2026-11-18T09:30:42.9840723Z   LEG: 66
+2026-11-18T09:30:42.9840886Z   PUBLICAR: si
+2026-11-18T09:30:42.9841072Z   CONGRESO_FALLOS: /tmp/fallos
+2026-11-18T09:30:42.9841343Z   pythonLocation: /opt/hostedtoolcache/Python/3.12.16/x64
+2026-11-18T09:30:42.9841693Z   PKG_CONFIG_PATH: /opt/hostedtoolcache/Python/3.12.16/x64/lib/pkgconfig
+2026-11-18T09:30:42.9842036Z   Python_ROOT_DIR: /opt/hostedtoolcache/Python/3.12.16/x64
+2026-11-18T09:30:42.9842386Z   Python2_ROOT_DIR: /opt/hostedtoolcache/Python/3.12.16/x64
+2026-11-18T09:30:42.9842697Z   Python3_ROOT_DIR: /opt/hostedtoolcache/Python/3.12.16/x64
+2026-11-18T09:30:42.9843001Z   LD_LIBRARY_PATH: /opt/hostedtoolcache/Python/3.12.16/x64/lib
+2026-11-18T09:30:42.9843318Z ##[endgroup]
+2026-11-18T09:30:43.0726930Z (node:2624) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
+2026-11-18T09:30:43.0727689Z (Use `node --trace-deprecation ...` to show where the warning was created)
+2026-11-18T09:30:43.0931229Z [command]/usr/bin/tar --posix -cf cache.tzst --exclude cache.tzst -P -C /home/runner/work/congreso-extractor/congreso-extractor --files-from manifest.txt --use-compress-program zstdmt
+2026-11-18T09:30:43.6488314Z (node:2624) [DEP0169] DeprecationWarning: `url.parse()` behavior is not standardized and prone to errors that have security implications. Use the WHATWG URL API instead. CVEs are not issued for `url.parse()` vulnerabilities.
+2026-11-18T09:30:44.5338144Z Sent 10648171 of 10648171 (100.0%), 11.4 MBs/sec
+2026-11-18T09:30:44.6703966Z Cache saved with key: descargas-44272219102

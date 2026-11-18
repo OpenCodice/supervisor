@@ -19,7 +19,7 @@ from pathlib import Path
 from . import cadenas as _cadenas
 from .actuar import Actor, describir
 from .estado import Estado
-from .invariantes import INVARIANTES, evaluar, instante, iso
+from .invariantes import INVARIANTES, evaluar, instante, iso, sin_observar
 from .observar import Cliente, ErrorApi, tomar_foto
 from .politica import EJECUTABLES, Decision, aplicar, decidir
 
@@ -48,10 +48,14 @@ def correr(foto: dict, cadenas: _cadenas.Cadenas, estado: Estado, ahora: datetim
     for d in decisiones:
         if d.accion in EJECUTABLES:
             previstas[d.accion] = previstas.get(d.accion, 0) + 1
+    ciegos = {n: m for n, m in sin_observar(foto, cadenas).items() if cadenas.encendido(n)}
     latido = {
         "cuando": iso(ahora), "modo": actor.modo,
-        "invariantes": {n: ("apagada" if not cadenas.encendido(n) else f"rota:{rotas[n]}" if n in rotas else "ok")
+        "invariantes": {n: ("apagada" if not cadenas.encendido(n) else f"rota:{rotas[n]}" if n in rotas
+                            else "sin-observar" if n in ciegos else "ok")
                         for n in INVARIANTES},
+        # Lo que cada invariante no pudo mirar, también si además está rota por lo que sí vio.
+        "motivos": ciegos,
         "huellas_abiertas": sum(1 for r in estado.huellas.values() if r.get("estado") not in ("resuelta", "datos")),
         "acciones": previstas,
         "sin_observar": sorted(r for r, e in foto.get("repos", {}).items() if not e.get("observable")),
@@ -82,6 +86,8 @@ def resumen(resultado: dict, foto: dict, modo: str) -> str:
     if otras:
         lineas += ["", "Del estado:"]
         lineas += [f"- `{d.huella}` {(d.registro or {}).get('objeto', '')}: **{d.accion}** — {d.motivo}" for d in otras]
+    if latido.get("motivos"):
+        lineas += ["", "Sin observar (no es «ok»):"] + [f"- {n}: {m}" for n, m in latido["motivos"].items()]
     if foto.get("errores"):
         lineas += ["", "No se pudo observar:"] + [f"- {e}" for e in foto["errores"]]
     lineas += ["", f"Llamadas a la API para la foto: {foto.get('llamadas', 0)}."]

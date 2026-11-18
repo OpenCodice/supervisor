@@ -4,9 +4,11 @@ name: Supervisor
 run-name: "supervisor origen=[${{ inputs.origen }}]"
 
 # Una vuelta del reconciliador: observa las corridas, los PR y los commits de la
-# organización, evalúa los invariantes de cadenas.toml y relanza lo que falte.
-# La lanza el Worker `scheduler` cada 15 minutos; el cron de aquí es un segundo
-# reloj, que falla por causas distintas.
+# organización, evalúa los invariantes de cadenas.toml y lanza lo que toca: lo
+# que tiene horario, lo que pidió una corrida y lo que quedó pendiente. Es el
+# único que lanza corridas en la organización. Lo lanza a él el Worker
+# `scheduler` cada 15 minutos; el cron de aquí es un segundo reloj, que falla por
+# causas distintas.
 #
 # Con el secret SUPERVISOR_TOKEN actúa; sin él corre en modo informe con el
 # token del job (los repos son públicos: lectura sin más) y solo escribe
@@ -43,7 +45,7 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
-      - name: Jobs de corridas ya terminadas (no cambian)
+      - name: Jobs y peticiones de corridas ya terminadas (no cambian)
         uses: actions/cache@v4
         with:
           path: .cache/fotos
@@ -52,6 +54,9 @@ jobs:
       - name: Observar, evaluar y actuar
         env:
           GITHUB_TOKEN: ${{ secrets.SUPERVISOR_TOKEN || github.token }}
+          # Para leer GET /salud del Worker congreso-archivo (I10). Sin el
+          # secret, I10 sale «sin-observar».
+          CONGRESO_ARCHIVO_TOKEN: ${{ secrets.CONGRESO_ARCHIVO_TOKEN }}
         run: |
           modo=informe
           if [ "$ACTUA" = true ] && [ "$MODO" != informe ]; then modo=actuar; fi

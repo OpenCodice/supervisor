@@ -34,6 +34,8 @@ class Workflow:
     compuertas: tuple[dict, ...] = ()
     extractor_nuevo: tuple[str, ...] = ()
     titulos_previos: tuple[dict, ...] = ()
+    puede_pedir: tuple[str, ...] = ()
+    espera_libre: tuple[str, ...] = ()
 
     @property
     def clave(self) -> tuple[str, str]:
@@ -65,6 +67,7 @@ class Cadenas:
     repos: tuple[str, ...]
     web: dict
     reparacion: dict = field(default_factory=dict)
+    workers: tuple[dict, ...] = ()
 
     @property
     def org(self) -> str:
@@ -75,6 +78,10 @@ class Cadenas:
             if w.repo == repo and w.archivo == archivo:
                 return w
         return None
+
+    def pedible(self, origen: Workflow, repo: str, archivo: str) -> bool:
+        """¿`origen` tiene permiso de pedir ese workflow? (`archivo.yml` en su repo, `repo/archivo.yml` en otro)."""
+        return (archivo if repo == origen.repo else f"{repo}/{archivo}") in origen.puede_pedir
 
     def repos_con_workflows(self) -> list[str]:
         vistos = list(self.repos)
@@ -100,7 +107,9 @@ class Cadenas:
 
 
 _LISTAS = ("grupos", "inputs", "inputs_lista", "inputs_uno", "inputs_ignorados", "inputs_manuales",
-           "cadencias", "horario", "compuertas", "extractor_nuevo", "titulos_previos")
+           "cadencias", "horario", "compuertas", "extractor_nuevo", "titulos_previos", "puede_pedir", "espera_libre")
+DIAS = {"lun": 0, "mar": 1, "mie": 2, "jue": 3, "vie": 4, "sab": 5, "dom": 6}
+_HORA = re.compile(r"^(\*|[01]\d|2[0-3]):[0-5]\d$")
 
 
 def cargar(ruta: str | Path | None = None) -> Cadenas:
@@ -123,6 +132,7 @@ def cargar(ruta: str | Path | None = None) -> Cadenas:
         repos=tuple(r["nombre"] for r in crudo.get("repos", [])),
         web=crudo.get("web", {}),
         reparacion=crudo.get("reparacion", {}),
+        workers=tuple(crudo.get("workers", [])),
     )
     validar(cadenas)
     return cadenas
@@ -144,6 +154,27 @@ def validar(c: Cadenas) -> None:
             sobran = set(cad.get("inputs", {})) - declarados
             if sobran:
                 raise ValueError(f"cadenas.toml: {w.archivo}: una cadencia usa inputs no declarados: {sorted(sobran)}")
+        for cita in w.horario:
+            # Los días van por nombre: un número significa otra cosa en cada cron (en Cloudflare el 1 es domingo).
+            malos = [d for d in cita.get("dias", ["*"]) if d != "*" and d not in DIAS]
+            if malos:
+                raise ValueError(f"cadenas.toml: {w.archivo}: días de horario desconocidos: {malos} (se escriben {sorted(DIAS)})")
+            if not _HORA.match(str(cita.get("hora", ""))):
+                raise ValueError(f"cadenas.toml: {w.archivo}: hora de horario inválida: {cita.get('hora')!r}")
+            if "dia_mes" in cita and not (isinstance(cita["dia_mes"], int) and 1 <= cita["dia_mes"] <= 28):
+                raise ValueError(f"cadenas.toml: {w.archivo}: dia_mes va de 1 a 28")
+            sobran = set(cita.get("inputs", {})) - declarados
+            if sobran:
+                raise ValueError(f"cadenas.toml: {w.archivo}: un horario usa inputs no declarados: {sorted(sobran)}")
+        for otro in w.espera_libre:
+            if c.workflow(w.repo, otro) is None:
+                raise ValueError(f"cadenas.toml: {w.archivo}: espera_libre nombra `{otro}`, que no está declarado en {w.repo}")
+        for pedido in w.puede_pedir:
+            repo, _, archivo = pedido.rpartition("/")
+            destino = c.workflow(repo or w.repo, archivo)
+            if destino is None or destino.solo_grupo:
+                raise ValueError(f"cadenas.toml: {w.archivo}: puede_pedir nombra `{pedido}`, que no es un workflow "
+                                 f"vigilado que el supervisor lance")
         for comp in w.compuertas:
             if "paso" not in comp:
                 raise ValueError(f"cadenas.toml: {w.archivo}: una compuerta no dice su paso")
@@ -166,6 +197,12 @@ def validar(c: Cadenas) -> None:
                 raise ValueError("cadenas.toml: el supervisor no se repara a sí mismo")
             if any(r["nombre"] == d["repo"] for d in c.datos):
                 raise ValueError(f"cadenas.toml: {r['nombre']} es un repo de datos: el agente no lo toca")
+    for worker in c.workers:
+        for clave in ("nombre", "salud", "token_env"):
+            if not worker.get(clave):
+                raise ValueError(f"cadenas.toml: un Worker no declara `{clave}`")
+        if not str(worker["salud"]).startswith("https://"):
+            raise ValueError(f"cadenas.toml: {worker['nombre']}: `salud` tiene que ser una URL https")
     for d in c.datos:
         for pr in d.get("prs", []):
             re.compile(pr["rama"])

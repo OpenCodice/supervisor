@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import dataclasses
 import json
 import sys
 from datetime import datetime, timedelta, timezone
@@ -72,7 +73,15 @@ def cadenas():
     c.invariantes.update({k: k not in ("I9", "I10") for k in c.invariantes})
     # Ni de si el agente de infraestructura ya está encendido.
     c.reparacion["activa"] = True
-    return c
+    # Ni de la hora: lo que toca por horario se prueba encendiéndolo (`con_horario`).
+    return dataclasses.replace(c, workflows=tuple(dataclasses.replace(w, lanza_horario=False) for w in c.workflows))
+
+
+def con_horario(cadenas, *archivos: str, sin_cadencias: bool = True):
+    """Las mismas cadenas con el horario encendido en esos workflows (y, por omisión, sin cadencias)."""
+    return dataclasses.replace(cadenas, workflows=tuple(
+        dataclasses.replace(w, lanza_horario=w.archivo in archivos, cadencias=() if sin_cadencias else w.cadencias)
+        for w in cadenas.workflows))
 
 
 @pytest.fixture(scope="session")

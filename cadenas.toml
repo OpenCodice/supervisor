@@ -11,6 +11,9 @@ dias_foto = 9
 # nueva a la más vieja.
 max_corridas_con_jobs = 40
 lineas_log = 40
+# Artefactos `cadena` que se bajan por vuelta (los ya leídos están en el caché);
+# si hay más, los más viejos esperan a la vuelta siguiente.
+max_cadenas_por_vuelta = 60
 
 [invariantes]
 I1 = true    # cadencia
@@ -19,13 +22,16 @@ I3 = true    # nada se pierde en la cola
 I4 = true    # nada se atora
 I5 = true    # ningún PR automático queda abierto
 I6 = true    # trabajo pendiente declarado
-# Apagado mientras `reparar` relance su vigilancia: encendido, además, cada
-# arreglo del extractor lanzaría una vigilancia federal completa.
+# Apagado: lo sustituyen las peticiones (I12). El job que publica un arreglo del
+# extractor pide su vigilancia con los inputs justos; encendido, cada arreglo
+# lanzaría además una vigilancia completa.
 I7 = false   # extractor nuevo ⇒ reintento
 I8 = true    # la web está al día
 I9 = true    # los relojes viven
-I10 = false  # los Workers avanzan: falta GET /salud en congreso-archivo
+# Sin el token del Worker en el entorno sale «sin-observar», no «ok».
+I10 = true   # los Workers avanzan
 I11 = true   # rojo crónico
+I12 = true   # toda petición se atiende
 
 [politica]
 # Horas de espera antes de cada reintento, según cuántas veces seguidas se ha
@@ -51,8 +57,11 @@ pr_abierto_max_min = 90
 web_margen_min = 15
 cronico_corridas = 3
 relojes_max_h = 3
-# Minutos después de su hora en que todavía se lanza lo que tocaba por horario.
+# Minutos después de su hora en que todavía se lanza lo que tocaba por horario
+# (pasados, lo retoma la cadencia). No aplica a quien declara `espera_libre`.
 tolerancia_horario_min = 180
+# Horas que un sitio de un Worker puede tener pendientes sin bajar nada (I10).
+worker_pendiente_max_h = 6
 
 [firmas]
 # Expresiones regulares sobre la firma normalizada (sin distinguir mayúsculas).
@@ -98,11 +107,20 @@ deterministas = [
 # omision          valor por omisión de los que no son cadena vacía.
 # relanzar_sin_inputs  una corrida de inputs desconocidos (anterior al
 #                  contrato, push, schedule) se puede relanzar sin inputs.
-# encadenado       termina con el job `estado pendiente=[…]` (I6).
+# encadenado       cumple el contrato: `run-name` con sus inputs y job final
+#                  `estado pendiente=[…]` (I6), que sube el artefacto `cadena`.
+# puede_pedir      workflows que una corrida suya puede pedir por una salida
+#                  `pedir*` (I12): `archivo.yml` de su repo o `repo/archivo.yml`.
+#                  Una petición a otro destino solo deja constancia.
 # cadencias        I1: cada una exige una corrida exitosa dentro de su ventana
 #                  con esos inputs.
-# horario          cuándo toca lanzarlo (UTC). Con lanza_horario = false solo
-#                  se documenta: el Worker scheduler todavía los lanza.
+# horario          cuándo toca lanzarlo (UTC): `dias` por nombre (lun…dom, `*`),
+#                  `dia_mes` (1–28), `hora` "HH:MM" o "*:MM" (cada hora) e
+#                  `inputs`. Solo cuenta la cita más reciente: lo atrasado no se
+#                  acumula. Con lanza_horario = false solo se documenta.
+# espera_libre     workflows de su repo que tienen que estar sin corridas vivas
+#                  y sin PR automático abierto para lanzarlo por horario; la
+#                  cita espera hasta la siguiente en vez de caducar.
 # max_min          minutos que una corrida puede estar en curso (I4).
 # compuertas       pasos que fallan a propósito por los datos o por el
 #                  extractor: clase `datos`, el supervisor no los toca. Con
@@ -115,14 +133,13 @@ deterministas = [
 repo = "constitucion-extractor"
 archivo = "vigilar-cpeum.yml"
 grupo = "vigilar-constitucion-mexicana"
-inputs = ["reintento", "origen"]
-inputs_ignorados = ["reintento", "origen"]
-omision = { reintento = "false" }
+inputs = ["origen"]
+inputs_ignorados = ["origen"]
 relanzar_sin_inputs = true
 encadenado = true
 cadencias = [{ ventana_h = 192 }]
 horario = [{ dias = ["lun"], hora = "09:00" }]
-lanza_horario = false
+lanza_horario = true
 max_min = 420
 compuertas = [
   { paso = "Compuertas del arreglo del agente" },
@@ -134,16 +151,15 @@ compuertas = [
 repo = "constitucion-extractor"
 archivo = "vigilar-estatales.yml"
 grupo = "vigilar-leyes-estatales"
-inputs = ["reintento", "estado", "pdf_url", "origen"]
+inputs = ["estado", "pdf_url", "origen"]
 inputs_uno = ["estado"]
-inputs_ignorados = ["reintento", "origen"]
+inputs_ignorados = ["origen"]
 inputs_manuales = ["pdf_url"]
-omision = { reintento = "false" }
 relanzar_sin_inputs = true
 encadenado = true
 cadencias = [{ ventana_h = 192 }]
 horario = [{ dias = ["lun"], hora = "09:00" }]
-lanza_horario = false
+lanza_horario = true
 max_min = 420
 compuertas = [
   { paso = "Compuertas del arreglo del agente" },
@@ -166,21 +182,23 @@ archivo = "credenciales.yml"
 inputs = ["origen"]
 inputs_ignorados = ["origen"]
 relanzar_sin_inputs = true
+encadenado = true
 cadencias = [{ ventana_h = 768 }]
+horario = [{ dia_mes = 1, hora = "10:00" }]
+lanza_horario = true
 max_min = 60
 
 [[workflows]]
 repo = "fiscal-extractor"
 archivo = "vigilar-fiscal.yml"
 grupo = "vigilar-fiscal-mexicano"
-inputs = ["reintento", "origen"]
-inputs_ignorados = ["reintento", "origen"]
-omision = { reintento = "false" }
+inputs = ["origen"]
+inputs_ignorados = ["origen"]
 relanzar_sin_inputs = true
 encadenado = true
 cadencias = [{ ventana_h = 192 }]
 horario = [{ dias = ["lun"], hora = "09:00" }]
-lanza_horario = false
+lanza_horario = true
 max_min = 420
 compuertas = [
   { paso = "Compuertas del arreglo del agente" },
@@ -193,15 +211,16 @@ compuertas = [
 repo = "fiscal-extractor"
 archivo = "vigilar-federal.yml"
 grupo = "vigilar-leyes-federales"
-inputs = ["reintento", "docs", "lote", "origen"]
+inputs = ["docs", "lote", "origen"]
 inputs_lista = ["docs"]
-inputs_ignorados = ["reintento", "lote", "origen"]
-omision = { reintento = "false", lote = "40" }
+inputs_ignorados = ["lote", "origen"]
+omision = { lote = "40" }
 relanzar_sin_inputs = true
 encadenado = true
+puede_pedir = ["vigilar-federal.yml"]
 cadencias = [{ ventana_h = 192 }]
 horario = [{ dias = ["lun"], hora = "13:00" }]
-lanza_horario = false
+lanza_horario = true
 max_min = 1020
 extractor_nuevo = ["extractor"]
 compuertas = [
@@ -219,15 +238,16 @@ compuertas = [
 repo = "fiscal-extractor"
 archivo = "vigilar-leyes-estatales.yml"
 grupo = "vigilar-leyes-estatales"
-inputs = ["reintento", "docs", "estados", "lote", "revisar", "origen"]
+inputs = ["docs", "estados", "lote", "revisar", "origen"]
 inputs_lista = ["docs", "estados", "revisar"]
-inputs_ignorados = ["reintento", "lote", "origen"]
-omision = { reintento = "false", lote = "8" }
+inputs_ignorados = ["lote", "origen"]
+omision = { lote = "8" }
 relanzar_sin_inputs = true
 encadenado = true
+puede_pedir = ["vigilar-leyes-estatales.yml", "expandir-estatales.yml"]
 cadencias = [{ ventana_h = 192 }]
 horario = [{ dias = ["lun"], hora = "13:00" }]
-lanza_horario = false
+lanza_horario = true
 max_min = 870
 extractor_nuevo = ["extractor"]
 compuertas = [
@@ -250,9 +270,13 @@ inputs_manuales = ["sin_esperar", "ensayo", "simular", "simular_texto"]
 omision = { sin_esperar = "false", ensayo = "false" }
 relanzar_sin_inputs = true
 encadenado = true
+puede_pedir = ["expandir-estatales.yml", "vigilar-leyes-estatales.yml"]
 cadencias = [{ ventana_h = 192 }]
 horario = [{ dias = ["mie"], hora = "15:30" }]
-lanza_horario = false
+# La ronda semanal empieza un estado nuevo solo con la cadena anterior
+# terminada; las que se piden (`estado=`, `redeclarar=`) no esperan.
+espera_libre = ["vigilar-leyes-estatales.yml"]
+lanza_horario = true
 max_min = 720
 compuertas = [
   { paso = "Lo que el agente no puede tocar" },
@@ -295,7 +319,7 @@ horario = [
   { dias = ["*"], hora = "*:00", inputs = { publicar = "no" } },
   { dias = ["*"], hora = "18:00", inputs = { publicar = "si" } },
 ]
-lanza_horario = false
+lanza_horario = true
 max_min = 150
 # Títulos anteriores al contrato de run-name.
 titulos_previos = [
@@ -320,6 +344,17 @@ archivo = "resolver-residuos.yml"
 grupo = "actualizar-congreso"
 solo_grupo = true
 
+# Lo dispara workflow_run (I11 lo cubre). Se declara porque, al publicar un
+# arreglo de los parsers, pide la actualización que lo aprovecha.
+[[workflows]]
+repo = "congreso-extractor"
+archivo = "reparar-parsers.yml"
+grupo = "reparar-parsers"
+solo_grupo = true
+puede_pedir = ["actualizar-congreso.yml"]
+
+# Lo lanza I8 cuando un repo de datos avanza; un despliegue que falla tiene
+# dueño como cualquier otra corrida (I2).
 [[workflows]]
 repo = "constitucion-web"
 archivo = "deploy.yml"
@@ -327,7 +362,6 @@ grupo = "deploy"
 cancela_en_curso = true
 inputs = []
 relanzar_sin_inputs = true
-solo_grupo = true
 max_min = 30
 
 # El agente de infraestructura. Se declara para que la regla del único lanzador
@@ -382,7 +416,7 @@ prs = [
 ]
 
 # ---------------------------------------------------------------------------
-# Otros repos con workflows: solo I11 (rojo crónico) y, en la web, I8.
+# Otros repos con workflows: solo I11 (rojo crónico).
 # ---------------------------------------------------------------------------
 
 [[repos]]
@@ -399,6 +433,18 @@ nombre = "fiscal-web"
 [web]
 repo = "constitucion-web"
 archivo = "deploy.yml"
+
+# ---------------------------------------------------------------------------
+# Workers de Cloudflare con trabajo en cola (I10). `salud` responde, por sitio,
+# cuántas páginas tiene pendientes, desde cuándo y cuándo bajó la última. El
+# token se lee del entorno (`token_env`); sin él, I10 queda sin observar.
+# ---------------------------------------------------------------------------
+
+[[workers]]
+nombre = "congreso-archivo"
+repo = "congreso-extractor"
+salud = "https://congreso-archivo.danielcardeenas.workers.dev/salud"
+token_env = "CONGRESO_ARCHIVO_TOKEN"
 
 # ---------------------------------------------------------------------------
 # Reparación de infraestructura con un agente (reparar-infra.yml).
