@@ -695,3 +695,109 @@ def test_i10_sin_token_sale_sin_observar_y_con_un_sitio_atorado_deja_constancia(
     sano = con_sitios(0)
     r = vuelta(sano, 60)
     assert r["estado"].huellas[d.huella]["estado"] == "resuelta" and r["latido"]["invariantes"]["I10"] == "ok"
+
+
+# ---- I13: una credencial por vencer deja constancia, la recuerda cada semana y se cierra al renovarla ----
+
+def _vence(foto, cuando, **cambios):
+    foto["credenciales"]["github"] |= {"vence": cuando} | cambios
+    return foto
+
+
+def _issues(mundo):
+    """(abiertos, comentarios, cerrados) que el supervisor ha escrito en su repo."""
+    rutas = [(m, r, c) for m, r, c in mundo.cliente.llamadas if r.startswith("repos/OpenCodice/supervisor/issues")]
+    return (sum(1 for m, r, _ in rutas if m == "POST" and r.endswith("/issues")),
+            sum(1 for m, r, _ in rutas if m == "POST" and r.endswith("/comments")),
+            sum(1 for m, r, c in rutas if m == "PATCH" and c == {"state": "closed"}))
+
+
+def test_i13_constancia_recordatorio_semanal_y_cierre_al_renovar(cadenas, foto_sana, mundo):
+    vence = iso(AHORA + timedelta(days=20))
+    r = mundo.vuelta(_vence(foto_sana(), vence))
+    [d] = mundo.de(r, "I13")
+    assert (d.accion, d.clase, d.hallazgo.objeto) == ("agotada", "credencial", "SUPERVISOR_TOKEN")
+    assert r["latido"]["invariantes"]["I13"] == "rota:1" and mundo.cliente.lanzamientos() == []
+    [(_, _, abierto)] = [x for x in mundo.cliente.llamadas if x[1] == "repos/OpenCodice/supervisor/issues"]
+    assert abierto["title"] == f"[{d.huella}] 🔑 SUPERVISOR_TOKEN vence el {vence[:10]}"
+    assert "gh secret set SUPERVISOR_TOKEN -R OpenCodice/supervisor" in abierto["body"] and "faltan 20 días" in abierto["body"]
+    assert "Issues" in abierto["body"] and "no es una asignación" in abierto["body"]
+
+    # La misma foto, y las de los días siguientes, no repiten el aviso ni escriben estado.
+    r = mundo.vuelta(_vence(foto_sana(), vence), AHORA + timedelta(minutes=15))
+    assert mundo.de(r, "I13")[0].accion == "nada" and _issues(mundo) == (1, 0, 0) and not r["estado"]._huellas_nuevas
+    r = mundo.vuelta(_vence(foto_sana(), vence), AHORA + timedelta(days=6, hours=23))
+    assert _issues(mundo) == (1, 0, 0) and not r["estado"]._huellas_nuevas
+
+    # A la semana, un recordatorio en el mismo issue, con los días que quedan.
+    r = mundo.vuelta(_vence(foto_sana(), vence), AHORA + timedelta(days=7))
+    assert mundo.de(r, "I13")[0].accion == "agotada" and _issues(mundo) == (1, 1, 0)
+    assert "faltan 13 días" in mundo.cliente.llamadas[-1][2]["body"]
+    mundo.vuelta(_vence(foto_sana(), vence), AHORA + timedelta(days=8))
+    assert _issues(mundo) == (1, 1, 0)
+
+    # Una vuelta que no supo nada del token (o que corrió sin el secret) no lo da por renovado.
+    r = mundo.vuelta(_vence(foto_sana(), None, observado=False), AHORA + timedelta(days=9))
+    assert r["estado"].huellas[d.huella]["estado"] == "agotada" and r["latido"]["invariantes"]["I13"] == "sin-observar"
+    r = mundo.vuelta(_vence(foto_sana(), None, propio=False), AHORA + timedelta(days=9, minutes=15), modo="informe")
+    assert r["estado"].huellas[d.huella]["estado"] == "agotada" and _issues(mundo) == (1, 1, 0)
+
+    # Renovado: la fecha cambió y queda lejos. El issue se cierra solo.
+    r = mundo.vuelta(_vence(foto_sana(), iso(AHORA + timedelta(days=375))), AHORA + timedelta(days=10))
+    assert r["estado"].huellas[d.huella]["estado"] == "resuelta" and _issues(mundo) == (1, 2, 1)
+    assert r["latido"]["invariantes"]["I13"] == "ok"
+
+
+def test_i13_renovado_por_poco_tiempo_vuelve_a_avisar_con_la_fecha_nueva(foto_sana, mundo):
+    r = mundo.vuelta(_vence(foto_sana(), iso(AHORA + timedelta(days=3))))
+    [d] = mundo.de(r, "I13")
+    r = mundo.vuelta(_vence(foto_sana(), iso(AHORA + timedelta(days=25))), AHORA + timedelta(days=1))
+    assert mundo.de(r, "I13")[0].accion == "agotada" and _issues(mundo) == (1, 1, 0)
+    assert "faltan 24 días" in mundo.cliente.llamadas[-1][2]["body"] and mundo.de(r, "I13")[0].huella == d.huella
+
+
+def test_i13_un_permiso_perdido_deja_constancia_y_se_cierra_cuando_vuelve(cadenas, foto_sana, mundo):
+    negado = [{"que": "lanzar o cancelar corridas en congreso-extractor", "estado": 403, "origen": "accion", "cuando": t(1)}]
+    r = mundo.vuelta(_vence(foto_sana(), None, rechazos=negado))
+    [d] = mundo.de(r, "I13")
+    assert (d.accion, d.hallazgo.objeto) == ("agotada", "SUPERVISOR_TOKEN/permisos")
+    assert _issues(mundo) == (1, 0, 0) and mundo.cliente.lanzamientos() == []
+    mundo.vuelta(_vence(foto_sana(), None, rechazos=negado), AHORA + timedelta(minutes=15))
+    assert _issues(mundo) == (1, 0, 0)
+    r = mundo.vuelta(foto_sana(), AHORA + timedelta(minutes=30))
+    assert r["estado"].huellas[d.huella]["estado"] == "resuelta" and _issues(mundo) == (1, 1, 1)
+
+
+def test_i13_un_aviso_que_no_se_pudo_escribir_no_se_reintenta_en_cada_vuelta(foto_sana, mundo):
+    mundo.cliente.falla_en = "/issues"
+    foto = lambda: _vence(foto_sana(), iso(AHORA + timedelta(days=5)))  # noqa: E731
+    mundo.vuelta(foto())
+    mundo.vuelta(foto(), AHORA + timedelta(minutes=15))
+    assert len(mundo.cliente.llamadas) == 1
+    mundo.cliente.falla_en = None
+    r = mundo.vuelta(foto(), AHORA + timedelta(hours=6))
+    assert mundo.de(r, "I13")[0].accion == "agotada" and _issues(mundo) == (2, 0, 0)
+
+
+def test_i13_sin_el_secret_es_un_hallazgo_y_el_worker_que_rechaza_su_token_tambien(cadenas, foto_sana, mundo):
+    from supervisor.__main__ import resumen
+    foto = _vence(foto_sana(), None, propio=False)
+    r = mundo.vuelta(foto, modo="informe")
+    [d] = mundo.de(r, "I13")
+    assert d.hallazgo.objeto == "SUPERVISOR_TOKEN/ausente" and r["latido"]["invariantes"]["I13"] == "rota:1"
+    assert mundo.cliente.llamadas == []
+    texto = resumen(r, foto, "informe", cadenas)
+    assert "modo informe y nada se lanza ni se relanza" in texto and "- SUPERVISOR_TOKEN: falta; la vuelta usó el token del job" in texto
+
+    foto = foto_sana()
+    foto["workers"] = {"congreso-archivo": {"observable": False, "motivo": "GET /salud: HTTP 401", "rechazo": 401}}
+    r = mundo.vuelta(foto, AHORA + timedelta(minutes=15))
+    [d] = mundo.de(r, "I13")
+    assert (d.accion, d.hallazgo.objeto) == ("agotada", "CONGRESO_ARCHIVO_TOKEN@congreso-archivo") and _issues(mundo) == (1, 0, 0)
+    # El Worker caído no es el Worker aceptando el token: la huella sigue abierta hasta que conteste bien.
+    foto["workers"] = {"congreso-archivo": {"observable": False, "motivo": "GET /salud: OSError"}}
+    r = mundo.vuelta(foto, AHORA + timedelta(minutes=30))
+    assert r["estado"].huellas[d.huella]["estado"] == "agotada"
+    foto["workers"] = {"congreso-archivo": {"observable": True, "sitios": {}}}
+    r = mundo.vuelta(foto, AHORA + timedelta(minutes=45))
+    assert r["estado"].huellas[d.huella]["estado"] == "resuelta" and _issues(mundo) == (1, 1, 1)

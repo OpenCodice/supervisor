@@ -100,7 +100,9 @@ def real(reales):
 def foto_sana(cadenas):
     """Todo en orden: cada workflow con cadencia tiene una corrida exitosa reciente y no hay nada abierto."""
     def _foto(*corridas_extra: tuple[str, dict], datos: dict | None = None, sin: tuple = ()) -> dict:
-        foto = {"cuando": iso(AHORA), "org": "OpenCodice", "repos": {}, "datos": {}, "errores": [], "llamadas": 0}
+        foto = {"cuando": iso(AHORA), "org": "OpenCodice", "repos": {}, "datos": {}, "errores": [], "llamadas": 0,
+                "credenciales": {"github": {"propio": True, "observado": True, "vence": None, "cabecera": None,
+                                            "rechazos": []}}}
         for repo in cadenas.repos_con_workflows():
             foto["repos"][repo] = {"observable": True, "corridas": [], "ultima_exitosa": {}}
         for wf in cadenas.workflows:

@@ -68,6 +68,7 @@ class Cadenas:
     web: dict
     reparacion: dict = field(default_factory=dict)
     workers: tuple[dict, ...] = ()
+    credenciales: tuple[dict, ...] = ()
 
     @property
     def org(self) -> str:
@@ -99,6 +100,14 @@ class Cadenas:
             if r["nombre"] == repo:
                 return r
         return None
+
+    def credencial(self, nombre: str) -> dict | None:
+        return next((c for c in self.credenciales if c["nombre"] == nombre), None)
+
+    @property
+    def credencial_github(self) -> dict | None:
+        """La credencial con la que el supervisor habla con la API de GitHub."""
+        return next((c for c in self.credenciales if c.get("uso") == "github"), None)
 
     @property
     def workflow_reparacion(self) -> Workflow | None:
@@ -133,6 +142,7 @@ def cargar(ruta: str | Path | None = None) -> Cadenas:
         web=crudo.get("web", {}),
         reparacion=crudo.get("reparacion", {}),
         workers=tuple(crudo.get("workers", [])),
+        credenciales=tuple(crudo.get("credenciales", [])),
     )
     validar(cadenas)
     return cadenas
@@ -203,6 +213,14 @@ def validar(c: Cadenas) -> None:
                 raise ValueError(f"cadenas.toml: un Worker no declara `{clave}`")
         if not str(worker["salud"]).startswith("https://"):
             raise ValueError(f"cadenas.toml: {worker['nombre']}: `salud` tiene que ser una URL https")
+    for cred in c.credenciales:
+        for clave in ("nombre", "que", "necesita", "guardar"):
+            if not cred.get(clave):
+                raise ValueError(f"cadenas.toml: una credencial no declara `{clave}`")
+        if c.credencial(cred["nombre"]) is not cred:
+            raise ValueError(f"cadenas.toml: la credencial {cred['nombre']} está dos veces")
+    if sum(1 for cred in c.credenciales if cred.get("uso") == "github") > 1:
+        raise ValueError("cadenas.toml: solo una credencial puede ser la de GitHub (`uso = \"github\"`)")
     for d in c.datos:
         for pr in d.get("prs", []):
             re.compile(pr["rama"])

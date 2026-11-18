@@ -32,6 +32,7 @@ I9 = true    # los relojes viven
 I10 = true   # los Workers avanzan
 I11 = true   # rojo crónico
 I12 = true   # toda petición se atiende
+I13 = true   # las credenciales siguen vigentes
 
 [politica]
 # Horas de espera antes de cada reintento, según cuántas veces seguidas se ha
@@ -62,6 +63,13 @@ relojes_max_h = 3
 tolerancia_horario_min = 180
 # Horas que un sitio de un Worker puede tener pendientes sin bajar nada (I10).
 worker_pendiente_max_h = 6
+# Días antes del vencimiento de una credencial en que I13 empieza a avisar, y
+# cada cuántos días repite el aviso en su issue mientras nadie la renueve.
+aviso_vencimiento_dias = 30
+aviso_repeticion_dias = 7
+# Horas que un 401/403 de una acción (un lanzamiento, un cierre) sigue contando
+# como permiso perdido si ninguna acción igual sobre ese repo salió bien después.
+rechazo_vigente_h = 192
 
 [firmas]
 # Expresiones regulares sobre la firma normalizada (sin distinguir mayúsculas).
@@ -183,8 +191,10 @@ inputs = ["origen"]
 inputs_ignorados = ["origen"]
 relanzar_sin_inputs = true
 encadenado = true
-cadencias = [{ ventana_h = 768 }]
-horario = [{ dia_mes = 1, hora = "10:00" }]
+# Semanal y antes de las vigilancias: con un aviso de 30 días, un token por
+# vencer falla aquí varias veces antes de vencer, no en una sola corrida.
+cadencias = [{ ventana_h = 192 }]
+horario = [{ dias = ["lun"], hora = "08:00" }]
 lanza_horario = true
 max_min = 60
 
@@ -445,6 +455,36 @@ nombre = "congreso-archivo"
 repo = "congreso-extractor"
 salud = "https://congreso-archivo.danielcardeenas.workers.dev/salud"
 token_env = "CONGRESO_ARCHIVO_TOKEN"
+
+# ---------------------------------------------------------------------------
+# Credenciales que el supervisor usa en cada vuelta (I13). No las renueva: deja
+# constancia en un issue, con este texto, antes de que venzan o cuando pierden
+# un permiso, y lo cierra cuando ve que cambiaron.
+#
+# uso          "github": el token con el que habla con la API; su vencimiento
+#              viene en la cabecera `github-authentication-token-expiration` de
+#              cualquier respuesta. Sin `uso`, es el token de un `[[workers]]`
+#              (el de su `token_env`).
+# presente_env variable del entorno que vale `true` cuando el secret existe
+#              (`supervisor.yml` la pone); `false` = la vuelta corrió con el
+#              token del job, en modo informe.
+# que, necesita, guardar   lo que dice el issue: qué es, qué permisos y repos
+#              necesita el token nuevo y el comando exacto para guardarlo.
+# ---------------------------------------------------------------------------
+
+[[credenciales]]
+nombre = "SUPERVISOR_TOKEN"
+uso = "github"
+presente_env = "ACTUA"
+que = "PAT fine-grained `opencodice-supervisor`, secret del repo `supervisor`. Con él el supervisor observa la organización, lanza y cancela corridas, cierra un PR automático atorado y escribe estos issues."
+necesita = "Dueño del recurso: la organización OpenCodice, con acceso a todos sus repositorios (también los privados: las dos webs). Permisos de repositorio, todos de lectura y escritura: Actions, Contents, Workflows, Pull requests e Issues."
+guardar = "gh secret set SUPERVISOR_TOKEN -R OpenCodice/supervisor"
+
+[[credenciales]]
+nombre = "CONGRESO_ARCHIVO_TOKEN"
+que = "Token compartido con el Worker `congreso-archivo` (su secret `TOKEN`). El supervisor lee con él `GET /salud` (I10); `congreso-extractor` lo usa para pedir y leer páginas."
+necesita = "El mismo valor en los tres lugares: el secret `TOKEN` del Worker (`npx wrangler secret put TOKEN` en `congreso-extractor/archivo/`) y el secret `CONGRESO_ARCHIVO_TOKEN` de los repos `congreso-extractor` y `supervisor`."
+guardar = "gh secret set CONGRESO_ARCHIVO_TOKEN -R OpenCodice/supervisor"
 
 # ---------------------------------------------------------------------------
 # Reparación de infraestructura con un agente (reparar-infra.yml).

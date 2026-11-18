@@ -16,6 +16,8 @@ from .cadenas import Cadenas, Workflow
 
 EN_ESPERA = {"queued", "pending", "waiting", "requested"}
 FALLAS = {"failure", "timed_out", "startup_failure"}
+# Acciones del supervisor que crean una corrida en el workflow de su detalle.
+LANZAN = {"lanzar", "cancelar-y-relanzar", "desplegar-web", "revisar-pr", "agente", "revertir"}
 
 _TITULO = re.compile(r"^(?P<wf>[a-z0-9-]+)(?P<pares>(?: [a-z_]+=\[[^\]]*\])*)$")
 _PAR = re.compile(r" ([a-z_]+)=\[([^\]]*)\]")
@@ -878,6 +880,161 @@ def i12(foto: dict, cadenas: Cadenas, ahora: datetime) -> list[Hallazgo]:
 
 
 # --------------------------------------------------------------------------
+# I13 — Las credenciales siguen vigentes
+# --------------------------------------------------------------------------
+
+_RECHAZO = re.compile(r"HTTP (401|403)\b")
+_LIMITE_DE_USO = re.compile(r"rate limit|límite de uso|abuse", re.I)
+def es_limite_de_uso(error: str) -> bool:
+    """Un 403 por pedir de más no es un permiso perdido."""
+    return bool(_LIMITE_DE_USO.search(error))
+
+
+_PERMISO_DE = {"lanzar": "lanzar o cancelar corridas en {repo}", "cerrar-pr": "cerrar un PR de {repo}",
+               "agotada": "escribir issues en {repo}"}
+
+
+def rechazos_de_acciones(acciones: list, cadenas: Cadenas, ahora: datetime) -> list[dict]:
+    """Lo que la API le negó al token al actuar: por cada clase de acción y repo, la última, si fue
+    un 401/403 reciente. Una acción igual que después salió bien lo deja atrás."""
+    desde = ahora - timedelta(hours=cadenas.politica.get("rechazo_vigente_h", 192))
+    ultimas: dict[tuple, dict] = {}
+    for a in sorted(acciones, key=lambda a: a.get("cuando") or ""):
+        det = a.get("detalle") or {}
+        clase = "lanzar" if a.get("accion") in LANZAN else a.get("accion")
+        if clase not in _PERMISO_DE or not a.get("resultado"):
+            continue
+        repo = {"lanzar": det.get("repo"), "cerrar-pr": det.get("repo_datos")}.get(clase, cadenas.general["repo_supervisor"])
+        if repo:
+            ultimas[(clase, repo)] = a
+    rechazos = []
+    for (clase, repo), a in sorted(ultimas.items()):
+        m = _RECHAZO.search(a["resultado"])
+        if m and not es_limite_de_uso(a["resultado"]) and instante(a["cuando"]) >= desde:
+            rechazos.append({"que": _PERMISO_DE[clase].format(repo=repo), "estado": int(m.group(1)),
+                             "origen": "accion", "cuando": a["cuando"]})
+    return rechazos
+
+
+def _dia_y_hora(momento: datetime) -> str:
+    return momento.strftime("%Y-%m-%d %H:%M UTC")
+
+
+def _plazo(vence: datetime, ahora: datetime) -> str:
+    if vence <= ahora:
+        return f"venció el {_dia_y_hora(vence)}"
+    dias = (vence - ahora).days
+    return f"vence el {_dia_y_hora(vence)} ({'faltan ' + str(dias) + ' días' if dias else 'faltan menos de 24 horas'})"
+
+
+def _texto_credencial(declarada: dict, que_pasa: str, cierre: str) -> str:
+    """El cuerpo de la constancia: qué credencial es, qué le pasa y cómo la cambia una persona."""
+    return "\n".join([
+        f"**Credencial** `{declarada['nombre']}` — {declarada['que']}", "",
+        que_pasa, "",
+        f"**Qué necesita la nueva** {declarada['necesita']}", "",
+        f"**Cómo se guarda** `{declarada['guardar']}`", "",
+        f"El supervisor no la renueva ni lanza nada por esto: lo arregla una persona. {cierre}",
+    ])
+
+
+def i13(foto: dict, cadenas: Cadenas, ahora: datetime) -> list[Hallazgo]:
+    """Un token por vencer, que perdió un permiso o que falta se avisa antes de que algo se rompa."""
+    hallazgos = []
+    propio = cadenas.general["repo_supervisor"]
+
+    def hallar(declarada: dict, objeto: str, motivo: str, base: str, titulo: str, que_pasa: str, cierre: str) -> None:
+        hallazgos.append(Hallazgo(
+            invariante="I13", repo=propio, workflow=None, objeto=objeto, motivo=motivo, relanzable=False, base=base,
+            extra={"titulo": titulo, "constancia": _texto_credencial(declarada, que_pasa, cierre)}))
+
+    leido = (foto.get("credenciales") or {}).get("github")
+    declarada = cadenas.credencial_github
+    if leido and declarada:
+        nombre = declarada["nombre"]
+        vence = instante(leido.get("vence")) if leido.get("observado") else None
+        aviso = timedelta(days=cadenas.politica.get("aviso_vencimiento_dias", 30))
+        if leido.get("propio") is False:
+            hallar(declarada, f"{nombre}/ausente",
+                   f"la vuelta corrió sin el secret {nombre}: el supervisor está en modo informe y nada se lanza ni se relanza",
+                   "ausente", f"🔑 Falta {nombre}: el supervisor solo informa",
+                   f"**Qué pasa** `supervisor.yml` corrió sin el secret `{nombre}`, con el token del job: observa lo "
+                   "público y escribe su resumen, pero no lanza, no relanza, no cancela ni cierra nada.",
+                   "Este issue se cierra solo cuando una vuelta corra con el secret.")
+        else:
+            if vence is not None and vence - ahora < aviso:
+                plazo = _plazo(vence, ahora)
+                hallar(declarada, nombre, f"{nombre} {plazo}", leido["vence"],
+                       f"🔑 {nombre} vence el {vence.strftime('%Y-%m-%d')}",
+                       f"**Qué pasa** {plazo[0].upper()}{plazo[1:]}. Cuando venza, el supervisor deja de ver la "
+                       "organización y de lanzar: ninguna cadena corre ni se relanza.",
+                       "Este issue se cierra solo cuando el supervisor vea otra fecha de vencimiento.")
+            rechazos = leido.get("rechazos") or []
+            if rechazos:
+                lista = sorted({f"{r['que']} (HTTP {r['estado']})" for r in rechazos})
+                hallar(declarada, f"{nombre}/permisos", f"la API le negó a {nombre}: " + "; ".join(lista),
+                       "|".join(lista), f"🔑 {nombre} perdió permisos",
+                       "**Qué pasa** La API de GitHub le negó al token:\n" + "\n".join(f"- {r}" for r in lista)
+                       + "\n\nUn token vencido, revocado o sin ese permiso o ese repo no se arregla reintentando.",
+                       "Este issue se cierra solo cuando esas operaciones vuelvan a salir bien.")
+    for worker in cadenas.workers:
+        salud = (foto.get("workers") or {}).get(worker["nombre"]) or {}
+        declarada = cadenas.credencial(worker["token_env"])
+        if salud.get("rechazo") and declarada:
+            nombre = declarada["nombre"]
+            hallar(declarada, f"{nombre}@{worker['nombre']}",
+                   f"el Worker {worker['nombre']} rechazó {nombre} (GET /salud: HTTP {salud['rechazo']})",
+                   "rechazado", f"🔑 El Worker {worker['nombre']} rechaza {nombre}",
+                   f"**Qué pasa** `GET /salud` del Worker `{worker['nombre']}` contestó HTTP {salud['rechazo']} al "
+                   "token que tiene el supervisor: se cambió en un lado y no en el otro. Mientras tanto no se sabe "
+                   "si el Worker avanza (I10).",
+                   "Este issue se cierra solo cuando el Worker vuelva a aceptar el token.")
+    return hallazgos
+
+
+def credenciales_en_breve(foto: dict, cadenas: Cadenas, ahora: datetime) -> list[str]:
+    """Una línea por credencial para el resumen de la vuelta: qué se supo de ella."""
+    lineas = []
+    leido = (foto.get("credenciales") or {}).get("github")
+    declarada = cadenas.credencial_github
+    if leido and declarada:
+        nombre = declarada["nombre"]
+        if leido.get("propio") is False:
+            lineas.append(f"{nombre}: falta; la vuelta usó el token del job")
+        else:
+            quien = nombre if leido.get("propio") else f"el token de esta vuelta (se evalúa como {nombre})"
+            if not leido.get("observado"):
+                lineas.append(f"{quien}: sin observar ({_sin_token(leido)})")
+            elif leido.get("vence"):
+                lineas.append(f"{quien}: {_plazo(instante(leido['vence']), ahora)}")
+            else:
+                lineas.append(f"{quien}: no vence")
+    for worker in cadenas.workers:
+        salud = (foto.get("workers") or {}).get(worker["nombre"])
+        if salud is not None and cadenas.credencial(worker["token_env"]):
+            como = (f"aceptado por {worker['nombre']}" if salud.get("observable")
+                    else f"rechazado (HTTP {salud['rechazo']}) por {worker['nombre']}" if salud.get("rechazo")
+                    else f"sin observar ({salud.get('motivo')})")
+            lineas.append(f"{worker['token_env']}: {como}")
+    return lineas
+
+
+def _sin_token(leido: dict | None) -> str:
+    if not leido:
+        return "la foto no trae las credenciales"
+    if leido.get("cabecera") and not leido.get("vence"):
+        return f"fecha de vencimiento ilegible: {leido['cabecera']}"
+    return "la API no aceptó ninguna petición con el token"
+
+
+def token_rechazado(foto: dict) -> bool:
+    """GitHub no aceptó el token en nada de lo que se le pidió y al menos una vez dijo 401."""
+    leido = (foto.get("credenciales") or {}).get("github") or {}
+    return not leido.get("observado", True) and any(
+        r["origen"] == "foto" and r["estado"] == 401 for r in leido.get("rechazos") or [])
+
+
+# --------------------------------------------------------------------------
 # Lo que no se pudo observar
 # --------------------------------------------------------------------------
 
@@ -906,13 +1063,18 @@ def sin_observar(foto: dict, cadenas: Cadenas) -> dict[str, str]:
                        if not (foto.get("workers", {}).get(w["nombre"]) or {}).get("observable")]
         if nombre == "I12":
             ciegos += [m for m in motivos if m.endswith(" (artefactos)")]
+        if nombre == "I13" and cadenas.credencial_github:
+            leido = (foto.get("credenciales") or {}).get("github")
+            if not leido or not leido.get("observado"):
+                motivos = motivos | {cadenas.credencial_github["nombre"]: _sin_token(leido)}
+                ciegos.append(cadenas.credencial_github["nombre"])
         if ciegos:
             faltan[nombre] = "; ".join(f"{r}: {motivos.get(r, 'sin acceso')}" for r in dict.fromkeys(ciegos))
     return faltan
 
 
 INVARIANTES = {"I1": i1, "I2": i2, "I3": i3, "I4": i4, "I5": i5, "I6": i6,
-               "I7": i7, "I8": i8, "I9": i9, "I10": i10, "I11": i11, "I12": i12}
+               "I7": i7, "I8": i8, "I9": i9, "I10": i10, "I11": i11, "I12": i12, "I13": i13}
 
 
 def evaluar(foto: dict, cadenas: Cadenas, ahora: datetime) -> list[Hallazgo]:

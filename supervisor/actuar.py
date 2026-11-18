@@ -83,7 +83,7 @@ class Actor:
         """Abre el issue de la huella o comenta el que ya existe."""
         h, reg = d.hallazgo, d.registro or {}
         objeto = h.objeto if h else reg.get("objeto", "")
-        titulo = f"[{d.huella}] {d.accion}: {objeto}"
+        titulo = f"[{d.huella}] " + ((h.extra.get("titulo") if h else None) or f"{d.accion}: {objeto}")
         cuerpo = "\n".join(filter(None, [
             f"**Huella** `{d.huella}` · **acción** `{d.accion}` · **clase** `{d.clase or '—'}`",
             f"**Invariante** {h.invariante if h else reg.get('invariante')} · **objeto** `{objeto}`",
@@ -94,6 +94,7 @@ class Actor:
             ("**Corridas** " + ", ".join(
                 f"[{c}](https://github.com/{self.org}/{h.repo}/actions/runs/{c})" for c in h.corridas))
             if h and h.corridas else None,
+            ("\n" + h.extra["constancia"]) if h and h.extra.get("constancia") else None,
             "",
             "Constancia pública del supervisor; no es una asignación.",
         ]))

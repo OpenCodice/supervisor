@@ -9,7 +9,7 @@ from conftest import AHORA, FIXTURES, corrida, t, titulo
 
 from supervisor import huella
 from supervisor import invariantes as inv
-from supervisor.observar import Cliente, ErrorApi, LimiteDeUso, _jobs_de, peticiones_de, salud_de, tomar_foto
+from supervisor.observar import Cliente, ErrorApi, LimiteDeUso, _jobs_de, peticiones_de, salud_de, tomar_foto, vencimiento
 
 
 class Red:
@@ -286,7 +286,9 @@ def test_salud_del_worker_con_su_token_y_sin_el(cadenas):
     sin = salud_de(Cliente("t", transporte=red), worker, {})
     assert sin == {"observable": False, "motivo": "falta CONGRESO_ARCHIVO_TOKEN en el entorno"} and len(red.pedidos) == 1
     negado = salud_de(Cliente("t", transporte=Red([("/salud", (401, {}, b"no autorizado\n"))])), worker, {"CONGRESO_ARCHIVO_TOKEN": "x"})
-    assert negado == {"observable": False, "motivo": "GET /salud: HTTP 401"}
+    assert negado == {"observable": False, "motivo": "GET /salud: HTTP 401", "rechazo": 401}
+    caido = salud_de(Cliente("t", transporte=Red([("/salud", (503, {}, b""))])), worker, {"CONGRESO_ARCHIVO_TOKEN": "x"})
+    assert caido == {"observable": False, "motivo": "GET /salud: HTTP 503"}
 
     def caida(*_):
         raise OSError("sin red")
@@ -303,3 +305,84 @@ def test_la_foto_lleva_la_salud_solo_con_i10_encendida(cadenas, tmp_path):
     assert foto["workers"]["congreso-archivo"]["observable"] is False
     assert foto["motivos"]["congreso-archivo"] == "falta CONGRESO_ARCHIVO_TOKEN en el entorno"
     assert tomar_foto(Cliente("t", transporte=red), cadenas, AHORA, entorno={})["workers"] == {}
+
+
+# ---- Credenciales (I13) ----
+
+@pytest.mark.parametrize("cabecera, esperado", [
+    ("2027-11-20 06:00:00 UTC", "2027-11-20T06:00:00Z"),
+    ("2027-11-20 00:00:00 -0600", "2027-11-20T06:00:00Z"),
+    ("2027-11-20 08:00:00 +0200", "2027-11-20T06:00:00Z"),
+    ("2027-11-20 11:30:00 +05:30", "2027-11-20T06:00:00Z"),
+    ("2027-11-20T06:00:00Z", "2027-11-20T06:00:00Z"),
+    ("2027-11-20 06:00:00", "2027-11-20T06:00:00Z"),
+    (" 2027-02-28 23:59:59 UTC ", "2027-02-28T23:59:59Z"),
+])
+def test_vencimiento_en_los_formatos_de_la_cabecera(cabecera, esperado):
+    assert inv.iso(vencimiento(cabecera)) == esperado
+
+
+@pytest.mark.parametrize("cabecera", ["", "nunca", "2027-11-20", "20/11/2027 06:00:00 UTC", "2027-13-40 06:00:00 UTC"])
+def test_vencimiento_ilegible(cabecera):
+    with pytest.raises(ValueError):
+        vencimiento(cabecera)
+
+
+def _con_cabeceras(red, cabeceras):
+    """La misma API, con esas cabeceras en cada respuesta."""
+    def envolver(respuesta):
+        def responder(url):
+            estado, cab, datos = respuesta(url) if callable(respuesta) else respuesta
+            return estado, cab | cabeceras, datos
+        return responder
+    red.rutas = [(fragmento, envolver(respuesta)) for fragmento, respuesta in red.rutas]
+    return red
+
+
+def test_la_foto_lleva_el_vencimiento_del_token_sin_llamadas_de_mas(cadenas):
+    sin_cabecera = tomar_foto(Cliente("t", transporte=_api(cadenas, {})), cadenas, AHORA, entorno={"ACTUA": "true"})
+    assert sin_cabecera["credenciales"]["github"] == {
+        "propio": True, "observado": True, "vence": None, "cabecera": None, "rechazos": []}
+    assert "rechazos" not in sin_cabecera
+
+    red = _con_cabeceras(_api(cadenas, {}), {"github-authentication-token-expiration": "2026-12-10 00:00:00 -0600"})
+    foto = tomar_foto(Cliente("t", transporte=red), cadenas, AHORA, entorno={"ACTUA": "true"})
+    assert foto["credenciales"]["github"] | {"cabecera": None} == sin_cabecera["credenciales"]["github"] | {
+        "vence": "2026-12-10T06:00:00Z"}
+    assert foto["llamadas"] == sin_cabecera["llamadas"]
+    [h] = inv.i13(foto, cadenas, AHORA)
+    assert h.objeto == "SUPERVISOR_TOKEN" and "faltan 21 días" in h.motivo
+
+    # Con el token del job (sin el secret) y en una máquina (sin esa variable).
+    assert tomar_foto(Cliente("t", transporte=red), cadenas, AHORA, entorno={"ACTUA": "false"})["credenciales"]["github"]["propio"] is False
+    assert tomar_foto(Cliente("t", transporte=red), cadenas, AHORA, entorno={})["credenciales"]["github"]["propio"] is None
+
+    rara = _con_cabeceras(_api(cadenas, {}), {"github-authentication-token-expiration": "pronto"})
+    leido = tomar_foto(Cliente("t", transporte=rara), cadenas, AHORA, entorno={"ACTUA": "true"})["credenciales"]["github"]
+    assert (leido["observado"], leido["vence"], leido["cabecera"]) == (False, None, "pronto")
+
+
+def test_la_foto_anota_lo_que_la_api_le_nego_al_token(cadenas):
+    red = _api(cadenas, {}, privados=("constitucion-web",))
+    red.rutas.insert(0, ("/repos/OpenCodice/fiscal-extractor/actions/runs", (403, {}, {"message": "Resource not accessible by personal access token"})))
+    negada = _accion_negada()
+    foto = tomar_foto(Cliente("t", transporte=red), cadenas, AHORA, entorno={"ACTUA": "true"}, acciones=[negada])
+    leido = foto["credenciales"]["github"]
+    assert leido["observado"] and {(r["que"], r["estado"], r["origen"]) for r in leido["rechazos"]} == {
+        ("leer las corridas de constitucion-web", 404, "foto"), ("leer las corridas de fiscal-extractor", 403, "foto"),
+        ("lanzar o cancelar corridas en congreso-extractor", 403, "accion")}
+    assert not inv.token_rechazado(foto)
+    assert [h.objeto for h in inv.i13(foto, cadenas, AHORA)] == ["SUPERVISOR_TOKEN/permisos"]
+
+
+def _accion_negada():
+    return {"cuando": t(3), "accion": "lanzar", "huella": "h", "detalle": {"repo": "congreso-extractor", "workflow": "x.yml"},
+            "resultado": "error: POST https://api.github.com/x/dispatches: HTTP 403 {\"message\":\"Resource not accessible by personal access token\"}"}
+
+
+def test_un_token_vencido_no_se_confunde_con_uno_que_no_vence(cadenas):
+    muerto = Red([("", (401, {}, {"message": "Bad credentials"}))])
+    foto = tomar_foto(Cliente("t", transporte=muerto), cadenas, AHORA, entorno={"ACTUA": "true"})
+    leido = foto["credenciales"]["github"]
+    assert leido["observado"] is False and leido["vence"] is None and {r["estado"] for r in leido["rechazos"]} == {401}
+    assert inv.token_rechazado(foto) and "I13" in inv.sin_observar(foto, cadenas)

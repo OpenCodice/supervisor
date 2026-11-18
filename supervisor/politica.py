@@ -30,13 +30,12 @@ from . import invariantes as inv
 from .cadenas import Cadenas, Workflow
 from .invariantes import Hallazgo, instante, iso
 
-# Acciones que crean una corrida en el workflow de su detalle.
-LANZAN = {"lanzar", "cancelar-y-relanzar", "desplegar-web", "revisar-pr", "agente", "revertir"}
+LANZAN = inv.LANZAN
 EJECUTABLES = LANZAN | {"cerrar-pr", "agotada"}
 # Lo que reparar-infra anota en acciones.jsonl y cambia el estado de una huella.
 EVENTOS = {"arreglo-publicado", "descartado", "revertido", "reversion-fallida"}
 EN_REPARACION = {"en-reparacion", "arreglo-publicado"}
-_ORDEN = ["I4", "I5", "I3", "I12", "I2", "I6", "I7", "I1", "I8", "I11", "I9", "I10"]
+_ORDEN = ["I4", "I5", "I3", "I12", "I2", "I6", "I7", "I1", "I8", "I11", "I9", "I10", "I13"]
 
 
 @dataclass
@@ -657,9 +656,33 @@ def _relanzar_pendiente(v: _Vuelta, reg: dict) -> Decision:
     return d
 
 
+def _credencial(v: _Vuelta, d: Decision) -> Decision:
+    """I13: constancia en un issue y un recordatorio cada tantos días. No lanza nada ni va al agente."""
+    reg, pol = d.registro, v.cadenas.politica
+    motivo = "la cambia una persona: el supervisor solo deja constancia"
+    if reg["ultima_accion"]:
+        # Un aviso que no se pudo escribir se reintenta antes que el recordatorio, sin insistir en cada vuelta.
+        pausa = (timedelta(days=pol.get("aviso_repeticion_dias", 7)) if reg["estado"] == "agotada"
+                 else timedelta(hours=6))
+        listo = instante(reg["ultima_accion"]) + pausa
+        if v.ahora < listo:
+            d.accion, d.motivo, d.proxima = "nada", f"agotada: {motivo}", iso(listo)
+            return d
+    d.accion, d.motivo = "agotada", motivo
+    d.efecto = {"estado": "agotada", "motivo": motivo, "ultima_accion": iso(v.ahora)}
+    return d
+
+
 def _se_ve(foto: dict, reg: dict) -> bool:
     """¿La foto alcanza a ver el repo de esta huella? Lo que no se ve no se da por resuelto."""
     repo = reg.get("repo")
+    if reg.get("invariante") == "I13":
+        _, _, worker = (reg.get("objeto") or "").partition("@")
+        if worker:
+            return bool((foto.get("workers", {}).get(worker) or {}).get("observable"))
+        # Solo una vuelta con el secret, y a la que la API le contestó, sabe cómo está el token.
+        leido = (foto.get("credenciales") or {}).get("github") or {}
+        return bool(leido.get("observado") and leido.get("propio"))
     if reg.get("invariante") == "I5":
         return repo in foto.get("datos", {})
     if reg.get("invariante") == "I10":
@@ -684,6 +707,8 @@ def decidir(hallazgos: list[Hallazgo], huellas: dict, acciones: list, foto: dict
         clase = clasificar(h.falla, wf, cadenas) if h.invariante in ("I2", "I11") else None
         if h.invariante == "I10":
             clase = "determinista"
+        elif h.invariante == "I13":
+            clase = "credencial"
         elif h.extra.get("rechazada"):
             clase = "rechazada"
         d = Decision(huella=ident, accion="nada", motivo="", hallazgo=h, clase=clase)
@@ -726,6 +751,8 @@ def decidir(hallazgos: list[Hallazgo], huellas: dict, acciones: list, foto: dict
             # El motivo de la constancia no lleva las cuentas del sitio, que cambian en cada vuelta.
             _agotar(d, "el sitio no avanza en el Worker: es un defecto del Worker, no la falla de una corrida, "
                        "y el agente de infraestructura no lo toma")
+        elif h.invariante == "I13":
+            _credencial(v, d)
         elif h.extra.get("rechazada"):
             _agotar(d, h.extra["rechazada"])
         else:

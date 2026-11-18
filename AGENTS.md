@@ -90,9 +90,23 @@ respaldo. El contexto del proyecto está en el `AGENTS.md` de la raíz del espac
 - **I7** (extractor nuevo ⇒ vigilancia) queda apagada: quien publica un arreglo del extractor pide su
   vigilancia con los inputs justos.
 - **I10.** `GET /salud` de cada `[[workers]]`, con el token del entorno (`CONGRESO_ARCHIVO_TOKEN`, que
-  `supervisor.yml` pasa si el secret existe). Un sitio con pendientes cuya más antigua pasa de
+  `supervisor.yml` pasa si el secret existe; si el Worker lo rechaza, es un hallazgo de I13). Un sitio con pendientes cuya más antigua pasa de
   `worker_pendiente_max_h` y sin un éxito en ese tiempo es un hallazgo `determinista`, con huella por
   sitio: constancia en un issue. Sin el token, I10 sale `sin-observar`.
+- **I13.** Las credenciales de `[[credenciales]]`. La del propio supervisor (`uso = "github"`): `Cliente`
+  guarda la cabecera `github-authentication-token-expiration` de la primera respuesta que la API acepta
+  (ninguna llamada de más; sin cabecera, el token no vence) y `tomar_foto` la deja en
+  `foto["credenciales"]["github"]` junto con lo que la API le negó: lecturas de esta vuelta y, de
+  `acciones.jsonl`, la última acción de cada clase sobre cada repo si fue un 401/403
+  (`invariantes.rechazos_de_acciones`; `rechazo_vigente_h`). Hallazgos, uno por credencial y problema
+  (`SUPERVISOR_TOKEN`, `SUPERVISOR_TOKEN/permisos`, `SUPERVISOR_TOKEN/ausente`,
+  `CONGRESO_ARCHIVO_TOKEN@congreso-archivo`), de clase `credencial`: solo constancia en un issue
+  (`politica._credencial`), con el texto de `[[credenciales]]`, repetida cada `aviso_repeticion_dias`;
+  nunca un lanzamiento ni el agente. La base del de vencimiento es la fecha: otra fecha dentro del
+  umbral vuelve a avisar, y una lejana (o ninguna) lo resuelve y cierra el issue. Solo una vuelta con el
+  secret y con respuesta de la API da algo por resuelto (`politica._se_ve`). `presente_env` nombra la
+  variable con que `supervisor.yml` dice si el secret existe (`ACTUA`); en una máquina no está, y el
+  token se evalúa igual. Si la API rechaza el token en todo con 401, `correr` termina en 1.
 - **Sin observar.** `invariantes.sin_observar` dice qué invariante no pudo mirar qué (un repo que el
   token no ve, un repo de datos, un Worker); en el latido sale `sin-observar` con su motivo, nunca `ok`.
 

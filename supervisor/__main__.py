@@ -19,7 +19,7 @@ from pathlib import Path
 from . import cadenas as _cadenas
 from .actuar import Actor, describir
 from .estado import Estado
-from .invariantes import INVARIANTES, evaluar, instante, iso, sin_observar
+from .invariantes import INVARIANTES, credenciales_en_breve, evaluar, instante, iso, sin_observar, token_rechazado
 from .observar import Cliente, ErrorApi, tomar_foto
 from .politica import EJECUTABLES, Decision, aplicar, decidir
 
@@ -64,7 +64,7 @@ def correr(foto: dict, cadenas: _cadenas.Cadenas, estado: Estado, ahora: datetim
     return {"hallazgos": hallazgos, "decisiones": decisiones, "latido": latido}
 
 
-def resumen(resultado: dict, foto: dict, modo: str) -> str:
+def resumen(resultado: dict, foto: dict, modo: str, cadenas: _cadenas.Cadenas | None = None) -> str:
     decisiones: list[Decision] = resultado["decisiones"]
     latido = resultado["latido"]
     verbo = "Haría" if modo == "informe" else "Hizo"
@@ -88,6 +88,9 @@ def resumen(resultado: dict, foto: dict, modo: str) -> str:
         lineas += [f"- `{d.huella}` {(d.registro or {}).get('objeto', '')}: **{d.accion}** — {d.motivo}" for d in otras]
     if latido.get("motivos"):
         lineas += ["", "Sin observar (no es «ok»):"] + [f"- {n}: {m}" for n, m in latido["motivos"].items()]
+    credenciales = credenciales_en_breve(foto, cadenas, instante(latido["cuando"])) if cadenas else []
+    if credenciales:
+        lineas += ["", "Credenciales (I13):"] + [f"- {c}" for c in credenciales]
     if foto.get("errores"):
         lineas += ["", "No se pudo observar:"] + [f"- {e}" for e in foto["errores"]]
     lineas += ["", f"Llamadas a la API para la foto: {foto.get('llamadas', 0)}."]
@@ -130,7 +133,7 @@ def main(argv: list[str] | None = None) -> int:
             foto = json.loads(Path(args.foto).read_text(encoding="utf-8"))
         else:
             cliente = Cliente()
-            foto = tomar_foto(cliente, cadenas, ahora, args.cache, estado.huellas)
+            foto = tomar_foto(cliente, cadenas, ahora, args.cache, estado.huellas, acciones=estado.acciones)
         if args.guardar_foto:
             Path(args.guardar_foto).write_text(json.dumps(foto, ensure_ascii=False, indent=1), encoding="utf-8")
         if args.modo == "actuar" and cliente is None:
@@ -140,11 +143,16 @@ def main(argv: list[str] | None = None) -> int:
         print(f"::error::{e}", file=sys.stderr)
         return 1
     estado.guardar()
-    texto = resumen(resultado, foto, args.modo)
+    texto = resumen(resultado, foto, args.modo, cadenas)
     print(texto)
     if os.environ.get("GITHUB_STEP_SUMMARY"):
         with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as f:
             f.write(texto)
+    if not args.foto and token_rechazado(foto):
+        # Una vuelta ciega no puede terminar en verde: el hombre muerto del scheduler cuenta corridas exitosas.
+        print("::error::GitHub rechazó el token (HTTP 401) en todo lo que se le pidió: venció o se revocó. "
+              "Esta vuelta no vio nada ni pudo dejar constancia.", file=sys.stderr)
+        return 1
     return 0
 
 

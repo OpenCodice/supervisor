@@ -15,7 +15,7 @@ import zipfile
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from . import huella as _huella
@@ -36,6 +36,20 @@ _HOLGURA = 4
 _ARCHIVO_YML = re.compile(r"^[A-Za-z0-9_.-]+\.ya?ml$")
 _NOMBRE_REPO = re.compile(r"^[A-Za-z0-9_.-]+$")
 _TAM_MAX_CADENA = 1_000_000
+# GitHub dice en cada respuesta autenticada cuándo vence el token; si no vence, la cabecera no viene.
+CABECERA_VENCIMIENTO = "github-authentication-token-expiration"
+_VENCIMIENTO = re.compile(r"^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})\s*(UTC|GMT|Z|[+-]\d{2}:?\d{2})?$")
+
+
+def vencimiento(cabecera: str) -> datetime:
+    """El instante de `github-authentication-token-expiration`: `2027-11-20 06:00:00 UTC` o
+    `2027-11-20 00:00:00 -0600`. Sin zona se toma como UTC."""
+    m = _VENCIMIENTO.match(cabecera.strip())
+    if not m:
+        raise ValueError(f"fecha de vencimiento ilegible: {cabecera!r}")
+    zona = m.group(3) or "UTC"
+    zona = "+00:00" if zona in ("UTC", "GMT", "Z") else f"{zona[:3]}:{zona[-2:]}"
+    return datetime.fromisoformat(f"{m.group(1)}T{m.group(2)}{zona}").astimezone(timezone.utc)
 
 
 class ErrorApi(RuntimeError):
@@ -73,6 +87,9 @@ class Cliente:
         self._transporte, self._dormir, self._reloj = transporte, dormir, reloj
         self._espera_restante = espera_max
         self.llamadas = 0
+        # De la primera respuesta que la API acepta con el token: basta una lectura por vuelta.
+        self.respondio = False
+        self.cabecera_vencimiento: str | None = None
 
     def _cabeceras(self, con_token: bool = True) -> dict:
         cabeceras = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28",
@@ -103,6 +120,8 @@ class Cliente:
             self._dormir(espera)
         if estado >= 400:
             raise ErrorApi(estado, metodo, url, contenido.decode("utf-8", "replace"))
+        if self.token and not self.respondio:
+            self.respondio, self.cabecera_vencimiento = True, cab.get(CABECERA_VENCIMIENTO)
         return estado, cab, contenido
 
     def _espera_pedida(self, estado: int, cab: dict) -> float | None:
@@ -365,7 +384,9 @@ def salud_de(cliente: Cliente, worker: dict, entorno) -> dict:
     try:
         estado, contenido = cliente.externo(worker["salud"], token)
         if estado != 200:
-            return {"observable": False, "motivo": f"GET /salud: HTTP {estado}"}
+            # Un 401/403 es el token: rotado en el Worker y no aquí, o al revés (I13).
+            return {"observable": False, "motivo": f"GET /salud: HTTP {estado}"} | (
+                {"rechazo": estado} if estado in (401, 403) else {})
         sitios = json.loads(contenido)["sitios"]
         return {"observable": True,
                 "sitios": {host: {k: s.get(k) for k in _CAMPOS_SITIO} for host, s in sitios.items()}}
@@ -423,14 +444,42 @@ def _breve(e: ErrorApi) -> str:
     return f"HTTP {e.estado}"
 
 
+def _rechazo(foto: dict, que: str, e: ErrorApi, repo_entero: bool = False) -> None:
+    """Anota una lectura que la API negó al token (I13). GitHub contesta 404, no 403, por un repo
+    privado que el token no ve: cuenta cuando lo negado es el repo entero."""
+    if inv.es_limite_de_uso(str(e)):
+        return
+    if e.estado in (401, 403) or (repo_entero and e.estado == 404):
+        nuevo = {"que": que, "estado": e.estado, "origen": "foto"}
+        if nuevo not in foto["rechazos"]:
+            foto["rechazos"].append(nuevo)
+
+
+def _credencial_github(cliente: Cliente, cadenas: Cadenas, foto: dict, acciones: list, ahora: datetime, entorno) -> dict:
+    """Lo que esta vuelta supo del token con el que habló con la API: si es el del secret, cuándo
+    vence y qué se le negó."""
+    declarada = cadenas.credencial_github or {}
+    presente = (entorno.get(declarada.get("presente_env") or "") or "").strip().lower()
+    leido = {"propio": {"true": True, "false": False}.get(presente), "observado": cliente.respondio,
+             "vence": None, "cabecera": cliente.cabecera_vencimiento,
+             "rechazos": foto.pop("rechazos") + inv.rechazos_de_acciones(acciones, cadenas, ahora)}
+    if cliente.cabecera_vencimiento:
+        try:
+            leido["vence"] = inv.iso(vencimiento(cliente.cabecera_vencimiento))
+        except ValueError:
+            leido["observado"] = False
+    return leido
+
+
 def tomar_foto(cliente: Cliente, cadenas: Cadenas, ahora: datetime, cache: str | Path | None = None,
-               huellas: dict | None = None, entorno=None) -> dict:
+               huellas: dict | None = None, entorno=None, acciones: list | None = None) -> dict:
     org = cadenas.org
     dias = cadenas.general.get("dias_foto", 9)
     desde = (ahora - timedelta(days=dias)).strftime("%Y-%m-%dT%H:%M:%SZ")
     foto = {"cuando": inv.iso(ahora), "org": org, "dias": dias, "repos": {}, "datos": {}, "workers": {},
-            "errores": [], "motivos": {}}
+            "errores": [], "motivos": {}, "rechazos": []}
     cache = Path(cache) if cache else None
+    entorno = os.environ if entorno is None else entorno
 
     repos = cadenas.repos_con_workflows()
     if (cadenas.encendido("I9") or cadenas.reparacion) and cadenas.general["repo_supervisor"] not in repos:
@@ -448,6 +497,7 @@ def tomar_foto(cliente: Cliente, cadenas: Cadenas, ahora: datetime, cache: str |
             entrada["observable"] = False
             foto["errores"].append(f"{repo}: {e}")
             foto["motivos"][repo] = _breve(e)
+            _rechazo(foto, f"leer las corridas de {repo}", e, repo_entero=True)
             continue
         entrada["corridas"] = [recortar_corrida(c) for c in corridas]
 
@@ -466,6 +516,7 @@ def tomar_foto(cliente: Cliente, cadenas: Cadenas, ahora: datetime, cache: str |
                 raise
             except ErrorApi as e:
                 foto["errores"].append(f"{repo}/{wf.archivo}: {e}")
+                _rechazo(foto, f"leer las corridas de {repo}", e)
                 continue
             if previas:
                 entrada["ultima_exitosa"][wf.archivo] = recortar_corrida(previas[0])
@@ -480,6 +531,7 @@ def tomar_foto(cliente: Cliente, cadenas: Cadenas, ahora: datetime, cache: str |
                     raise
                 except ErrorApi as e:
                     foto["errores"].append(f"{repo}:{ruta}: {e}")
+                    _rechazo(foto, f"leer los commits de {repo}", e)
                     continue
                 if commits:
                     ultimos.append({"sha": commits[0]["sha"], "fecha": commits[0]["commit"]["committer"]["date"]})
@@ -498,6 +550,7 @@ def tomar_foto(cliente: Cliente, cadenas: Cadenas, ahora: datetime, cache: str |
                 raise
             except ErrorApi as e:
                 foto["errores"].append(f"{repo}#{ident}: {e}")
+                _rechazo(foto, f"leer los jobs de las corridas de {repo}", e)
 
     if cadenas.encendido("I12"):
         cupo = [cadenas.general.get("max_cadenas_por_vuelta", 60)]
@@ -511,10 +564,11 @@ def tomar_foto(cliente: Cliente, cadenas: Cadenas, ahora: datetime, cache: str |
             except ErrorApi as e:
                 foto["errores"].append(f"{repo} (artefactos): {e}")
                 foto["motivos"][f"{repo} (artefactos)"] = _breve(e)
+                _rechazo(foto, f"leer los artefactos de {repo}", e)
 
     if cadenas.encendido("I10"):
         for worker in cadenas.workers:
-            leido = salud_de(cliente, worker, os.environ if entorno is None else entorno)
+            leido = salud_de(cliente, worker, entorno)
             foto["workers"][worker["nombre"]] = leido
             if not leido["observable"]:
                 foto["motivos"][worker["nombre"]] = leido["motivo"]
@@ -529,6 +583,7 @@ def tomar_foto(cliente: Cliente, cadenas: Cadenas, ahora: datetime, cache: str |
         except ErrorApi as e:
             foto["errores"].append(f"{repo}: {e}")
             foto["motivos"][repo] = _breve(e)
+            _rechazo(foto, f"leer main y los PR de {repo}", e, repo_entero=True)
             continue
         foto["datos"][repo] = {
             "main": {"sha": cabeza["sha"], "fecha": cabeza["commit"]["committer"]["date"]},
@@ -539,5 +594,6 @@ def tomar_foto(cliente: Cliente, cadenas: Cadenas, ahora: datetime, cache: str |
                 "cross": (p["head"].get("repo") or {}).get("full_name") != p["base"]["repo"]["full_name"],
             } for p in abiertos],
         }
+    foto["credenciales"] = {"github": _credencial_github(cliente, cadenas, foto, acciones or [], ahora, entorno)}
     foto["llamadas"] = cliente.llamadas
     return foto

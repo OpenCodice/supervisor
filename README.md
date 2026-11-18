@@ -23,16 +23,43 @@ porque aquí la pregunta no es «¿qué acaba de pasar?» sino «¿qué debería
 | I10 | Los Workers avanzan (`GET /salud` de `congreso-archivo`) | constancia, por sitio |
 | I11 | Ningún workflow lleva tres corridas seguidas en rojo | lanza al agente de infraestructura |
 | I12 | Toda petición se atiende | lanza el workflow pedido con la unión de los inputs pedidos |
+| I13 | Las credenciales siguen vigentes: `SUPERVISOR_TOKEN` no vence en menos de 30 días ni perdió permisos, y `congreso-archivo` acepta su token | constancia, por credencial, con cómo renovarla; se recuerda cada semana y se cierra sola al cambiar |
 
 En el latido (`estado/latido.json`) cada invariante sale `ok`, `rota:n`, `apagada` o `sin-observar`
 (con su motivo): lo que no se pudo mirar no cuenta como sano.
+
+## Credenciales
+
+El supervisor avisa antes de que su token venza. GitHub dice en cada respuesta cuándo vence el token con
+que se le habla (cabecera `github-authentication-token-expiration`); la foto lo guarda sin una llamada
+de más, e I13 abre un issue cuando faltan menos de 30 días (`[politica].aviso_vencimiento_dias`), con qué
+token es, qué permisos necesita el nuevo y el comando para guardarlo (lo declarado en `[[credenciales]]`
+de `cadenas.toml`). Lo recuerda una vez por semana y lo cierra cuando ve otra fecha. No lanza nada ni se
+lo pasa al agente de infraestructura: un token lo renueva una persona.
+
+También es un hallazgo de I13, cada uno con su issue:
+
+- **un permiso perdido**: un 401 o 403 al leer un repo (o el 404 con que GitHub esconde un repo privado
+  que el token no ve) o al lanzar, cancelar, cerrar un PR o escribir un issue, mientras una acción igual
+  sobre ese repo no haya vuelto a salir bien;
+- **`supervisor.yml` sin `SUPERVISOR_TOKEN`**: la vuelta corrió con el token del job, en modo informe, y
+  nada se lanza ni se relanza (ese hallazgo queda en el resumen y en el latido: en modo informe no se
+  escriben issues);
+- **el Worker `congreso-archivo` rechaza `CONGRESO_ARCHIVO_TOKEN`** (401 de `GET /salud`): se cambió en
+  un lado y no en el otro.
+
+Si GitHub rechaza el token en todo (401: venció o se revocó), la vuelta termina en rojo en vez de pasar
+por sana sin haber visto nada, y el hombre muerto del Worker `scheduler` avisa con su propio token. Las
+demás credenciales del sistema las comprueba cada lunes `credenciales.yml` de `constitucion-extractor`
+(falla si a `PR_TOKEN`, a `CLOUDFLARE_API_TOKEN` o al token del agente les faltan menos de 30 días), y
+el token del `scheduler` lo vigila el propio Worker.
 
 ## Horarios y peticiones
 
 **Horarios.** `cadenas.toml` dice cuándo toca cada workflow (UTC): los lunes a las 09:00 las vigilancias
 fiscal, de la CPEUM y de las constituciones estatales; los lunes a las 13:00 las de las leyes federales
 y estatales; los miércoles a las 15:30 la ronda de expansión; `actualizar-congreso` cada hora en el
-minuto 0 («solo pedir») y a las 18:00 la que publica; las credenciales, el día 1 de cada mes. «A su
+minuto 0 («solo pedir») y a las 18:00 la que publica; las credenciales, los lunes a las 08:00. «A su
 hora» es el primer tic dentro de la tolerancia (180 minutos); después lo retoma la cadencia. Solo cuenta
 la cita más reciente: si faltaron tres horas de congreso se lanza una corrida, no tres. La ronda de
 expansión, además, espera a que la cadena de leyes estatales esté libre (sin corridas vivas ni PR

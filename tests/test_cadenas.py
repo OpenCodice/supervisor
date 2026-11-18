@@ -21,8 +21,8 @@ def _yaml(wf):
     return cargar_yaml(ruta)
 
 
-def test_cadenas_se_carga_y_nombra_los_doce_invariantes(cadenas):
-    assert set(cadenas.invariantes) == {f"I{n}" for n in range(1, 13)}
+def test_cadenas_se_carga_y_nombra_los_trece_invariantes(cadenas):
+    assert set(cadenas.invariantes) == {f"I{n}" for n in range(1, 14)}
     assert {w.repo for w in cadenas.workflows} >= {"constitucion-extractor", "fiscal-extractor", "congreso-extractor"}
     assert cadenas.politica["espera_transitoria_h"] == [1, 6, 24] and cadenas.politica["max_lanzamientos_24h"] == 12
 
@@ -39,8 +39,13 @@ def test_el_supervisor_lanza_todo_lo_que_tiene_horario():
         "expandir-estatales.yml": [{"dias": ["mie"], "hora": "15:30"}],
         "actualizar-congreso.yml": [{"dias": ["*"], "hora": "*:00", "inputs": {"publicar": "no"}},
                                     {"dias": ["*"], "hora": "18:00", "inputs": {"publicar": "si"}}],
-        "credenciales.yml": [{"dia_mes": 1, "hora": "10:00"}],
+        "credenciales.yml": lunes("08:00"),
     }
+    # Semanal, con una ventana que deja pasar una cita y no dos.
+    assert c.workflow("constitucion-extractor", "credenciales.yml").cadencias == ({"ventana_h": 192},)
+    assert c.politica["aviso_vencimiento_dias"] == 30 and c.encendido("I13")
+    assert c.credencial_github["nombre"] == "SUPERVISOR_TOKEN"
+    assert {w["token_env"] for w in c.workers} <= {cred["nombre"] for cred in c.credenciales}
     assert c.workflow("fiscal-extractor", "expandir-estatales.yml").espera_libre == ("vigilar-leyes-estatales.yml",)
     assert not c.encendido("I7") and c.encendido("I10") and c.encendido("I12")
 

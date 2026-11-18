@@ -1,3 +1,4 @@
+import dataclasses
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -91,7 +92,7 @@ def test_i1_congreso_exige_publicar_si_cada_26_h(cadenas, foto_sana):
 def test_i1_usa_la_ultima_exitosa_fuera_de_la_foto(cadenas, foto_sana):
     foto = foto_sana(sin=(("constitucion-extractor", "credenciales.yml"),))
     assert _solo(inv.evaluar(foto, cadenas, AHORA), "I1", "credenciales")
-    foto["repos"]["constitucion-extractor"]["ultima_exitosa"]["credenciales.yml"] = corrida("credenciales.yml", hace_h=20 * 24)
+    foto["repos"]["constitucion-extractor"]["ultima_exitosa"]["credenciales.yml"] = corrida("credenciales.yml", hace_h=5 * 24)
     assert not _solo(inv.evaluar(foto, cadenas, AHORA), "I1", "credenciales")
 
 
@@ -108,16 +109,19 @@ def _citas(foto, cadenas, cuando: str) -> dict:
 # 2026-11-23 es lunes; el 22, domingo; el 25, miércoles; el 1 de diciembre, martes.
 LUNES_9 = {"vigilar-fiscal": "11-23T09:00", "vigilar-cpeum": "11-23T09:00", "vigilar-estatales": "11-23T09:00"}
 LUNES_13 = {"vigilar-federal": "11-23T13:00", "vigilar-leyes-estatales": "11-23T13:00"}
+CREDENCIALES = {"credenciales": "11-23T08:00"}
 
 
 @pytest.mark.parametrize("cuando, toca", [
     # Lunes es lunes: ni el domingo ni el martes a esa hora (en el cron de Cloudflare el 1 es domingo).
     ("2026-11-22T09:07:00Z", {"actualizar-congreso": "11-22T09:00"}),
     ("2026-11-24T09:07:00Z", {"actualizar-congreso": "11-24T09:00"}),
-    ("2026-11-23T08:59:00Z", {"actualizar-congreso": "11-23T08:00"}),
-    ("2026-11-23T09:00:00Z", LUNES_9 | {"actualizar-congreso": "11-23T09:00"}),
+    # Las credenciales, los lunes a las 08:00, antes de las vigilancias.
+    ("2026-11-23T07:59:00Z", {"actualizar-congreso": "11-23T07:00"}),
+    ("2026-11-23T08:59:00Z", {"actualizar-congreso": "11-23T08:00"} | CREDENCIALES),
+    ("2026-11-23T09:00:00Z", LUNES_9 | {"actualizar-congreso": "11-23T09:00"} | CREDENCIALES),
     # El tic puede llegar tarde o faltar: vale el primero dentro de la tolerancia (180 min).
-    ("2026-11-23T09:47:00Z", LUNES_9 | {"actualizar-congreso": "11-23T09:00"}),
+    ("2026-11-23T09:47:00Z", LUNES_9 | {"actualizar-congreso": "11-23T09:00"} | CREDENCIALES),
     ("2026-11-23T12:00:00Z", LUNES_9 | {"actualizar-congreso": "11-23T12:00"}),
     ("2026-11-23T12:01:00Z", {"actualizar-congreso": "11-23T12:00"}),
     ("2026-11-23T13:02:00Z", LUNES_13 | {"actualizar-congreso": "11-23T13:00"}),
@@ -129,11 +133,7 @@ LUNES_13 = {"vigilar-federal": "11-23T13:00", "vigilar-leyes-estatales": "11-23T
     # La ronda, los miércoles a las 15:30.
     ("2026-11-25T15:29:00Z", {"actualizar-congreso": "11-25T15:00"}),
     ("2026-11-25T15:31:00Z", {"actualizar-congreso": "11-25T15:00", "expandir-estatales": "11-25T15:30"}),
-    # Las credenciales, el día 1 de cada mes.
-    ("2026-12-01T10:10:00Z", {"actualizar-congreso": "12-01T10:00", "credenciales": "12-01T10:00"}),
-    ("2026-12-01T13:30:00Z", {"actualizar-congreso": "12-01T13:00"}),
-    ("2026-12-02T10:10:00Z", {"actualizar-congreso": "12-02T10:00"}),
-    ("2027-01-01T10:00:00Z", {"actualizar-congreso": "01-01T10:00", "credenciales": "01-01T10:00"}),
+    ("2026-12-01T10:10:00Z", {"actualizar-congreso": "12-01T10:00"}),
 ])
 def test_tabla_de_horarios(cadenas, foto_sana, cuando, toca):
     foto = foto_sana()
@@ -143,6 +143,18 @@ def test_tabla_de_horarios(cadenas, foto_sana, cuando, toca):
         foto["repos"][FE]["corridas"].append(corrida(ronda.archivo, titulo=titulo(ronda)) | {"created_at": f"{dia}T15:31:00Z"})
     foto["repos"][FE]["corridas"] = [c for c in foto["repos"][FE]["corridas"] if c["created_at"] < cuando]
     assert _citas(foto, cadenas, cuando) == toca
+
+
+@pytest.mark.parametrize("cuando, cita", [
+    ("2026-12-01T10:10:00Z", "12-01T10:00"), ("2026-12-01T13:30:00Z", None), ("2026-12-02T10:10:00Z", None),
+    ("2027-01-01T10:00:00Z", "01-01T10:00"),
+])
+def test_un_horario_por_dia_del_mes(cadenas, foto_sana, cuando, cita):
+    mensual = dataclasses.replace(cadenas, workflows=tuple(
+        dataclasses.replace(w, lanza_horario=True, cadencias=(), horario=({"dia_mes": 1, "hora": "10:00"},))
+        if w.archivo == "credenciales.yml" else w for w in cadenas.workflows))
+    citas = [h.extra["horario"][5:16] for h in inv.i1(foto_sana(), mensual, inv.instante(cuando)) if "horario" in h.extra]
+    assert citas == ([cita] if cita else [])
 
 
 def test_congreso_publica_a_las_18_y_el_resto_solo_pide(cadenas, foto_sana):
@@ -610,3 +622,103 @@ def test_sin_observar_dice_que_invariante_no_pudo_mirar_que(cadenas, foto_sana):
     assert ciegos["I2"] == ciegos["I4"] == "constitucion-web: HTTP 404"       # deploy.yml también tiene dueño
     assert ciegos["I12"] == "fiscal-extractor (artefactos): HTTP 403"
     assert not {"I6", "I7", "I9"} & set(ciegos)
+
+
+# ---- I13: las credenciales siguen vigentes ----
+
+def _con_token(foto, **cambios):
+    foto["credenciales"]["github"] |= cambios
+    return foto
+
+
+@pytest.mark.parametrize("faltan_dias, avisa", [(400, False), (31, False), (30.5, False), (29.9, True), (1, True),
+                                                (0.5, True), (-2, True)])
+def test_i13_avisa_dentro_del_umbral(cadenas, foto_sana, faltan_dias, avisa):
+    vence = inv.iso(AHORA + timedelta(days=faltan_dias))
+    hallazgos = inv.i13(_con_token(foto_sana(), vence=vence), cadenas, AHORA)
+    assert [h.objeto for h in hallazgos] == (["SUPERVISOR_TOKEN"] if avisa else [])
+    if avisa:
+        [h] = hallazgos
+        assert h.base == vence and not h.relanzable and h.repo == "supervisor" and h.workflow is None
+        assert h.extra["titulo"] == f"🔑 SUPERVISOR_TOKEN vence el {vence[:10]}"
+        texto = h.extra["constancia"]
+        assert "`gh secret set SUPERVISOR_TOKEN -R OpenCodice/supervisor`" in texto
+        assert "Actions, Contents, Workflows, Pull requests e Issues" in texto and "opencodice-supervisor" in texto
+        assert ("Venció el" if faltan_dias < 0 else "Vence el") in texto
+
+
+def test_i13_un_token_que_no_vence_no_avisa_y_sin_respuesta_no_es_ok(cadenas, foto_sana):
+    assert inv.i13(foto_sana(), cadenas, AHORA) == [] and "I13" not in inv.sin_observar(foto_sana(), cadenas)
+    ciega = _con_token(foto_sana(), observado=False, vence=t(-24))
+    assert inv.i13(ciega, cadenas, AHORA) == []
+    assert inv.sin_observar(ciega, cadenas)["I13"] == "SUPERVISOR_TOKEN: la API no aceptó ninguna petición con el token"
+    ilegible = _con_token(foto_sana(), observado=False, cabecera="mañana")
+    assert inv.sin_observar(ilegible, cadenas)["I13"] == "SUPERVISOR_TOKEN: fecha de vencimiento ilegible: mañana"
+    vieja = foto_sana()
+    del vieja["credenciales"]
+    assert inv.i13(vieja, cadenas, AHORA) == [] and "I13" in inv.sin_observar(vieja, cadenas)
+
+
+def test_i13_sin_el_secret_el_supervisor_solo_informa(cadenas, foto_sana):
+    foto = _con_token(foto_sana(), propio=False, rechazos=[{"que": "leer las corridas de constitucion-web", "estado": 404, "origen": "foto"}])
+    [h] = inv.i13(foto, cadenas, AHORA)
+    assert h.objeto == "SUPERVISOR_TOKEN/ausente" and "modo informe" in h.motivo and "nada se lanza" in h.motivo
+    assert inv.credenciales_en_breve(foto, cadenas, AHORA) == ["SUPERVISOR_TOKEN: falta; la vuelta usó el token del job"]
+
+
+def test_i13_permisos_perdidos_al_leer_y_al_actuar(cadenas, foto_sana):
+    rechazos = [{"que": "leer las corridas de constitucion-web", "estado": 404, "origen": "foto"},
+                {"que": "lanzar o cancelar corridas en congreso-extractor", "estado": 403, "origen": "accion", "cuando": t(1)}]
+    [h] = inv.i13(_con_token(foto_sana(), rechazos=rechazos), cadenas, AHORA)
+    assert h.objeto == "SUPERVISOR_TOKEN/permisos" and h.extra["titulo"] == "🔑 SUPERVISOR_TOKEN perdió permisos"
+    assert "- lanzar o cancelar corridas en congreso-extractor (HTTP 403)" in h.extra["constancia"]
+    assert "- leer las corridas de constitucion-web (HTTP 404)" in h.extra["constancia"]
+    # La huella no depende de qué se negó: es una por credencial y clase de problema.
+    otro = inv.i13(_con_token(foto_sana(), rechazos=rechazos[:1]), cadenas, AHORA)[0]
+    assert otro.objeto == h.objeto and otro.base != h.base
+
+
+def _accion(accion, hace_h, resultado="ok", **detalle):
+    return {"cuando": t(hace_h), "accion": accion, "detalle": detalle, "resultado": resultado, "huella": "h"}
+
+
+NEGADO = ('error: POST https://api.github.com/repos/OpenCodice/congreso-extractor/actions/workflows/actualizar-congreso.yml/'
+          'dispatches: HTTP 403 {"message":"Resource not accessible by personal access token","status":"403"}')
+
+
+def test_rechazos_de_acciones(cadenas):
+    de = lambda *acciones: [(r["que"], r["estado"]) for r in inv.rechazos_de_acciones(list(acciones), cadenas, AHORA)]  # noqa: E731
+    negada = _accion("lanzar", 5, NEGADO, repo="congreso-extractor", workflow="actualizar-congreso.yml")
+    assert de(negada) == [("lanzar o cancelar corridas en congreso-extractor", 403)]
+    # Un lanzamiento posterior a ese repo que salió bien lo deja atrás; uno a otro repo, no.
+    assert de(negada, _accion("agente", 2, repo="congreso-extractor", workflow="x.yml")) == []
+    assert de(negada, _accion("lanzar", 2, repo="fiscal-extractor", workflow="x.yml")) != []
+    # Lo viejo ya no cuenta, ni un límite de uso, ni un 422.
+    assert de(_accion("lanzar", 200, NEGADO, repo="congreso-extractor")) == []
+    assert de(_accion("lanzar", 1, "error: POST x: HTTP 403 API rate limit exceeded", repo="congreso-extractor")) == []
+    assert de(_accion("lanzar", 1, "error: POST x: HTTP 422 falla", repo="congreso-extractor")) == []
+    # Cerrar un PR y escribir la constancia son otros permisos, en otros repos.
+    assert de(_accion("cerrar-pr", 1, "error: PATCH x: HTTP 403 no", repo_datos="leyes-estatales", pr=4),
+              _accion("agotada", 1, "error: POST x: HTTP 401 Bad credentials")) == [
+        ("escribir issues en supervisor", 401), ("cerrar un PR de leyes-estatales", 403)]
+    # Lo que anota reparar-infra no es una acción del token.
+    assert de({"cuando": t(1), "accion": "descartado", "huella": "h", "detalle": {"motivo": "HTTP 403"}}) == []
+
+
+def test_i13_el_worker_rechaza_su_token(cadenas, foto_sana):
+    foto = foto_sana()
+    foto["workers"] = {"congreso-archivo": {"observable": False, "motivo": "GET /salud: HTTP 401", "rechazo": 401}}
+    [h] = inv.i13(foto, cadenas, AHORA)
+    assert h.objeto == "CONGRESO_ARCHIVO_TOKEN@congreso-archivo" and "HTTP 401" in h.motivo
+    assert "`gh secret set CONGRESO_ARCHIVO_TOKEN -R OpenCodice/supervisor`" in h.extra["constancia"]
+    assert "CONGRESO_ARCHIVO_TOKEN: rechazado (HTTP 401) por congreso-archivo" in inv.credenciales_en_breve(foto, cadenas, AHORA)
+    # Sin el token en el entorno, o con el Worker caído, no es un rechazo.
+    foto["workers"]["congreso-archivo"] = {"observable": False, "motivo": "GET /salud: HTTP 503"}
+    assert inv.i13(foto, cadenas, AHORA) == []
+
+
+def test_credenciales_en_breve(cadenas, foto_sana):
+    assert inv.credenciales_en_breve(foto_sana(), cadenas, AHORA) == ["SUPERVISOR_TOKEN: no vence"]
+    foto = _con_token(foto_sana(), propio=None, vence="2027-11-20T06:00:00Z")
+    assert inv.credenciales_en_breve(foto, cadenas, AHORA) == [
+        "el token de esta vuelta (se evalúa como SUPERVISOR_TOKEN): vence el 2027-11-20 06:00 UTC (faltan 366 días)"]
