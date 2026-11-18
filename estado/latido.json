@@ -1,15 +1,13 @@
 {
-  "acciones": {
-    "lanzar": 1
-  },
-  "cuando": "2026-11-18T14:00:26Z",
+  "acciones": {},
+  "cuando": "2026-11-18T14:15:26Z",
   "huellas_abiertas": 3,
   "invariantes": {
-    "I1": "rota:1",
-    "I10": "sin-observar",
+    "I1": "ok",
+    "I10": "ok",
     "I11": "ok",
     "I12": "ok",
-    "I2": "rota:2",
+    "I2": "rota:3",
     "I3": "ok",
     "I4": "ok",
     "I5": "ok",
@@ -19,8 +17,6 @@
     "I9": "ok"
   },
   "modo": "actuar",
-  "motivos": {
-    "I10": "congreso-archivo: falta CONGRESO_ARCHIVO_TOKEN en el entorno"
-  },
+  "motivos": {},
   "sin_observar": []
 }
