@@ -1,9 +1,10 @@
 # supervisor — guía para agentes
 
-El reconciliador de OpenCodice: un job de ~1 minuto, sin LLM, que cada 15 minutos observa el estado de
-las cadenas de la organización y relanza lo que falte. Lo lanza el Worker `scheduler`
-(`constitucion-extractor/scheduler/`); `supervisor.yml` tiene además un cron de respaldo. El contexto
-del proyecto está en el `AGENTS.md` de la raíz del espacio de trabajo.
+El reconciliador de OpenCodice y el único lanzador de sus corridas: un job de ~1 minuto, sin LLM, que
+cada 15 minutos observa el estado de las cadenas de la organización y lanza lo que toca (por horario,
+porque una corrida lo pidió, o porque falta). Lo lanza a él el Worker `scheduler`
+(`constitucion-extractor/scheduler/`), que no lanza nada más; `supervisor.yml` tiene además un cron de
+respaldo. El contexto del proyecto está en el `AGENTS.md` de la raíz del espacio de trabajo.
 
 ## Reglas
 
@@ -16,11 +17,14 @@ del proyecto está en el `AGENTS.md` de la raíz del espacio de trabajo.
 - **Las fallas de datos no son suyas.** Un paso que falla a propósito por los datos o por el extractor
   (las compuertas de `cadenas.toml`) se clasifica `datos` y se deja a los agentes de las vigilancias. No
   toca topes de reparación ni de expansión.
-- **Único lanzador.** Nunca lanza un workflow cuyo grupo de concurrency ya tiene una corrida en espera
-  (GitHub guarda una sola: la nueva cancelaría a la que espera), ni relanza lo que ya tiene una corrida
-  posterior equivalente (en curso, en espera o exitosa).
+- **Único lanzador.** Ningún workflow de la organización lanza a otro ni a sí mismo: lo exige
+  `lint_workflows.py` en cada repo, y solo este está exento. El supervisor nunca lanza un workflow cuyo
+  grupo de concurrency ya tiene una corrida en espera (GitHub guarda una sola: la nueva cancelaría a la
+  que espera), ni relanza lo que ya tiene una corrida posterior equivalente (en curso, en espera o
+  exitosa). Lo que no puede lanzar todavía no se pierde: sigue siendo un hallazgo en la vuelta siguiente.
 - **Que no se cicle.** Reintentos con espera (1 h → 6 h → 24 h para lo transitorio), tope de
-  lanzamientos por corrida y cortacircuitos de 12 lanzamientos por workflow en 24 h. Si tocas la
+  lanzamientos por corrida y cortacircuitos de 12 lanzamientos por workflow en 24 h (lo lanzado por
+  horario no cuenta: va una vez por cita). Si tocas la
   política, la prueba de idempotencia (la misma foto con el estado resultante no repite acciones) tiene
   que seguir en verde.
 - **`invariantes.py` y `politica.py` son puros.** Sin red, sin disco, sin reloj: reciben la foto, lo
@@ -46,8 +50,51 @@ del proyecto está en el `AGENTS.md` de la raíz del espacio de trabajo.
   cuyo título no la cumple (anterior al contrato, push, schedule) tiene inputs desconocidos: solo se
   relanza, sin inputs, si el workflow lo declara seguro (`relanzar_sin_inputs`).
 - **Input `origen`.** El supervisor lanza con `origen=supervisor`.
-- **Job final `estado`.** Su nombre es `estado pendiente=[true|false]`: se lee en la misma llamada que
-  lista los jobs. `true` = terminé bien mi parte y queda otra tanda con los mismos inputs (I6).
+- **Job final `estado`.** Último job, con `needs` de todos los demás e `if: always()`. Su nombre es
+  `estado pendiente=[true|false]`: se lee en la misma llamada que lista los jobs. `true` = terminé bien
+  mi parte y queda otra tanda con los mismos inputs (I6). Además sube el artefacto `cadena`
+  (`cadena.json` = `toJSON(needs)`): las salidas y el resultado de cada job.
+- **Peticiones.** Una salida de job cuyo nombre empieza por `pedir`, no vacía, es una petición o una
+  lista de ellas: `{"workflow": "<archivo.yml>", "inputs": {…}, "repo": "<otro repo de la organización>"}`,
+  con valores de cadena y sin `origen`. Significa «cuando esta corrida termine tiene que empezar una
+  corrida de ese workflow que abarque esos inputs». Solo vale hacia un workflow declarado y que esté en
+  el `puede_pedir` de quien pide.
+
+## Lo que lanza y cuándo
+
+- **Por horario (I1).** `horario` de cada workflow, con `lanza_horario = true`. Vale la cita más
+  reciente y solo ella (lo atrasado no se acumula), durante `tolerancia_horario_min`; pasada, lo retoma
+  la cadencia (`cadencias`). La corrida de una cita es la que hace todo lo de esa cita (no una parcial
+  ni una de prueba), creada desde su hora o anterior y todavía en espera. Cada cita es una huella
+  (`horario-<hora>`), así que no se lanza dos veces. Los días van por nombre (`lun`…`dom`): un número
+  significa otra cosa en cada cron. Un workflow con `espera_libre` se lanza por horario solo cuando los
+  workflows que nombra no tienen corridas vivas ni PR automático abierto, y su cita no caduca hasta la
+  siguiente (la ronda de expansión con la cadena de leyes estatales); las rondas que se piden no esperan.
+- **Por petición (I12).** `observar.py` baja el artefacto `cadena` de cada corrida terminada de un
+  workflow `encadenado` o con `puede_pedir` (una llamada por repo para listarlos y una descarga por
+  corrida, que se guarda: cada corrida se baja una sola vez; `max_cadenas_por_vuelta` acota la primera
+  vez). Atendida = hay una corrida del workflow pedido que abarca los inputs y empezó después de que
+  terminó la que pide (en el mismo grupo de concurrency basta con que se haya creado después: corren de
+  una en una). Las pendientes al mismo workflow se unen como en I3. Si la cadena pedida tiene su PR
+  automático abierto, espera a que se fusione. Una petición hacia un workflow no declarado, no
+  permitida, con inputs que el destino no declara o mal formada es un hallazgo de clase `rechazada`:
+  constancia en un issue, sin lanzar. No caduca mientras su corrida esté en la foto (`dias_foto`);
+  después la retoma la vuelta completa de la cadencia.
+- **La tanda siguiente (I6).** `estado pendiente=[true]` de una corrida exitosa que ninguna posterior
+  abarca. No se lanza mientras el PR automático de esa cadena siga abierto; si no se fusiona, lo
+  resuelve I5.
+- **La web (I8).** `deploy.yml` (workflow_dispatch) cuando `main` de algún repo de datos (`[[datos]]`,
+  también `congreso-mexicano`) es posterior al inicio del último despliegue exitoso, pasado
+  `web_margen_min`. Si un despliegue posterior a ese commit falla, I8 ya no insiste: la falla tiene
+  dueño (I2).
+- **I7** (extractor nuevo ⇒ vigilancia) queda apagada: quien publica un arreglo del extractor pide su
+  vigilancia con los inputs justos.
+- **I10.** `GET /salud` de cada `[[workers]]`, con el token del entorno (`CONGRESO_ARCHIVO_TOKEN`, que
+  `supervisor.yml` pasa si el secret existe). Un sitio con pendientes cuya más antigua pasa de
+  `worker_pendiente_max_h` y sin un éxito en ese tiempo es un hallazgo `determinista`, con huella por
+  sitio: constancia en un issue. Sin el token, I10 sale `sin-observar`.
+- **Sin observar.** `invariantes.sin_observar` dice qué invariante no pudo mirar qué (un repo que el
+  token no ve, un repo de datos, un Worker); en el latido sale `sin-observar` con su motivo, nunca `ok`.
 
 ## Cómo se agrega un invariante
 
@@ -70,6 +117,12 @@ del proyecto está en el `AGENTS.md` de la raíz del espacio de trabajo.
 Una falla se identifica por `(repo, workflow, job, paso, firma)`; la firma es la línea de error del paso
 sin lo que cambia de una corrida a otra (rutas temporales, números de corrida, fechas, shas, hosts). Lo
 que no es la falla de un paso se identifica por `(invariante, objeto)`.
+
+La firma se saca en cada vuelta, con el código de hoy, del log crudo del paso: del encabezado
+`##[group]Run` del paso que falló a su `##[error]`. El caché de corridas terminadas guarda ese log
+crudo, no la cola ya limpia, y su nombre lleva una versión (`_VERSION_CACHE` de `observar.py`): si
+cambias cómo se recorta o se limpia el log, súbela. Una huella que cambia de una vuelta a otra hace que
+el reintento nunca escale.
 
 | Clase | Regla | Tratamiento |
 |---|---|---|
@@ -130,8 +183,8 @@ ensayo a mano no depende de él.
 la vez. Una huella fuera del alcance (este repo, las webs, los repos de datos) queda `agotada` sin
 gastar sesión. El supervisor no se repara a sí mismo.
 
-**Alcance** (`[reparacion]` de `cadenas.toml`): workflows salvo `revisar-pr.yml`, `scripts/lanzar_*.sh`,
-`scripts/agente/*.sh` salvo `cerrar*.sh` y `publicar_registro.sh`, y los Workers `scheduler/` y
+**Alcance** (`[reparacion]` de `cadenas.toml`): workflows salvo `revisar-pr.yml`, `scripts/lanzar_*.sh`
+(hoy no existe ninguno), `scripts/agente/*.sh` salvo `cerrar*.sh` y `publicar_registro.sh`, y los Workers `scheduler/` y
 `archivo/`. Solo puede crear pruebas (`tests/test_infra_*.py`, `*.test.mjs` junto al Worker). Nunca
 `extractor/`, `congreso/`, una prueba existente, las compuertas de fidelidad, `verificaciones/`,
 `pendientes.json`, `certs/` ni `egress-mx/`. Un repo, 4 archivos, 120 líneas.
@@ -147,7 +200,7 @@ gastar sesión. El supervisor no se repara a sí mismo.
 | `lineas` | en cualquier línea añadida: ni `curl`/`wget`/`nc`/`ssh`/`scp`, ni un host o URL que no estuviera en ese archivo, ni `base64`/`eval`, ni desactivar TLS, ni `\|\| true`/`continue-on-error`/`set +e`/`exit 0`, ni el nombre de un secreto o token, ni `env`/`printenv`/`set -x`/`GITHUB_ENV`, ni intérpretes en línea, ni instalar algo (salvo `pip install -r`), ni `sudo`, ni `git push`/`gh api`, ni módulos de red o `fetch(` |
 | `contenido` | toca el workflow del paso de la huella o un archivo que ese paso invoca (resuelto con el lint), y nada más |
 | `worker` | ni bindings, ni rutas, ni `workers_dev`, ni nombres de `env.`, ni `fetch` nuevos; los crons solo si coinciden entre `wrangler.jsonc` y el código |
-| `lint`, `actionlint`, `shell`, `node` | sin hallazgos nuevos frente al árbol de partida (`lint_workflows.py`, `actionlint` 1.7.12 con `shellcheck`, `bash -n`, `node --check`) |
+| `lint`, `actionlint`, `shell`, `node` | sin hallazgos nuevos frente al árbol de partida: un arreglo que haga que un workflow lance otra corrida no entra (`lint_workflows.py`, `actionlint` 1.7.12 con `shellcheck`, `bash -n`, `node --check`) |
 | `pytest`, `node-test`, `wrangler` | en verde |
 
 Son estrictas a propósito: casi todos los jobs de los extractores tienen poder, así que un arreglo
