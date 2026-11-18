@@ -101,6 +101,10 @@ los secretos de la organización. Se descarta entero si:
   (`python -c`, `bash -c`), instalar algo (salvo `pip install -r <archivo>`),
   `sudo`, `git push`/`git config`/`gh api`, módulos de red (`urllib`,
   `requests`, `fetch(`), o un `timeout-minutes` mayor a 355;
+- una prueba nueva lee el entorno del proceso (`os.environ`, `os.getenv`,
+  `process.env`): corre en lugares donde hay tokens. Si la prueba ejecuta un
+  script, pásale un entorno escrito a mano con solo lo que necesita, por
+  ejemplo `env={"PATH": os.defpath, "CONGRESO_FALLOS": str(carpeta)}`;
 - `actionlint`, el lint de rutas o `shellcheck` dan un hallazgo que no estaba,
   o `pytest` no pasa;
 - otro agente, que no ve tu razonamiento, no confirma que el parche arregla
