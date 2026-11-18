@@ -11,7 +11,7 @@ debería ser cierto ahora?»:
 | # | Invariante | Si está rota |
 |---|---|---|
 | I1 | Cada workflow tiene una corrida exitosa dentro de su ventana | lo lanza |
-| I2 | Toda falla tiene dueño | reintenta con espera; si la huella se repite, la anota para el agente |
+| I2 | Toda falla tiene dueño | reintenta con espera; si la huella se repite, lanza al agente de infraestructura |
 | I3 | Nada se pierde en la cola | lanza la unión de los inputs de las corridas canceladas en espera |
 | I4 | Nada se atora | cancela y relanza |
 | I5 | Ningún PR automático queda abierto | lanza `revisar-pr`; si sigue abierto, lo cierra y relanza su vigilancia |
@@ -20,11 +20,36 @@ debería ser cierto ahora?»:
 | I8 | La web está al día con los repos de datos | lanza el despliegue |
 | I9 | Los relojes viven (apagada) | constancia |
 | I10 | Los Workers avanzan (apagada) | — |
-| I11 | Ningún workflow lleva tres corridas seguidas en rojo | la anota para el agente |
+| I11 | Ningún workflow lleva tres corridas seguidas en rojo | lanza al agente de infraestructura |
 
 El supervisor **no decide nada sobre texto legal y no fusiona PR**: lanza workflows, cancela corridas
 atoradas, cierra un PR automático atorado (cerrar no publica nada) y deja constancia en issues de este
 repo. Las fallas de una compuerta de datos las reconoce y no las toca.
+
+## Cuando reintentar no basta
+
+Una falla que se repite igual después de sus reintentos no es mala suerte: algo de la infraestructura
+está roto (una ruta que apunta a otro checkout, un `gh workflow run` con un input que no existe).
+`reparar-infra.yml` se la da a un agente de Claude Code, y código determinista decide si su arreglo
+entra:
+
+1. El agente trabaja con un usuario sin privilegios y un solo secreto (el suyo). Recibe la huella, el
+   log recortado del paso que falló y nada escrito por terceros. Entrega archivos, no commits.
+2. Compuertas sin ningún secreto comparan cada workflow tocado **como datos** antes y después: no
+   pueden cambiar los disparadores, los permisos, los secretos de ningún paso, las acciones ni el
+   conjunto de jobs; en un job que corre con secretos casi nada puede cambiar; ninguna línea nueva puede
+   traer red, un host nuevo, ni esconder una falla; y el arreglo tiene que tocar el archivo del paso que
+   falló.
+3. Otro agente, que no ve el razonamiento del primero, contesta tres preguntas cerradas.
+4. Si todo pasa, el arreglo se publica en main del extractor, se relanza la corrida que falló, y el
+   reconciliador la vigila: si el paso vuelve a fallar igual (o no hay resultado en 12 horas), **lo
+   revierte solo**.
+
+El agente solo puede tocar workflows y scripts de orquestación de los tres extractores, nunca el
+extractor, las compuertas de fidelidad, los repos de datos ni este repo. Dos intentos por huella y tres
+sesiones al día; lo que no se pueda arreglar así queda `agotada` con su motivo en un issue. Para
+ensayarlo sin publicar nada: `gh workflow run reparar-infra.yml -f ensayo=true -f huella=<huella>`. El
+detalle (alcance, cada compuerta, cómo se aísla el agente) está en `AGENTS.md`.
 
 ## Piezas
 
@@ -37,6 +62,10 @@ repo. Las fallas de una compuerta de datos las reconoce y no las toca.
 - `supervisor/actuar.py` — ejecuta la acción y la anota.
 - `supervisor/estado.py` — `estado/huellas.jsonl`, `estado/acciones.jsonl`, `estado/latido.json`.
 - `supervisor/lint_workflows.py` — lint independiente de workflows, para cualquier repo.
+- `supervisor/reparar.py` — la parte determinista de `reparar-infra.yml`: preparar, anotar, publicar,
+  revertir.
+- `supervisor/compuertas.py` — las compuertas del arreglo del agente.
+- `scripts/agente/` — `infra.sh` (lanza a los dos agentes, aislados) y sus briefs.
 
 ## Correrlo
 
@@ -84,7 +113,7 @@ que `actionlint` no mira:
 ## Estado
 
 `estado/` solo crece. De `huellas.jsonl` vale la última línea de cada huella; `acciones.jsonl` es la
-bitácora de lo que el supervisor hizo; `latido.json` es la última evaluación. Se hace commit solo cuando
+bitácora de lo que el supervisor hizo (y de lo que hizo `reparar-infra.yml` con cada huella); `latido.json` es la última evaluación. Se hace commit solo cuando
 algo cambió (sin novedades, el latido se reescribe una vez al día).
 
 ## Licencia
