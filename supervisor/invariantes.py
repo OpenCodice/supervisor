@@ -483,12 +483,13 @@ def i2(foto: dict, cadenas: Cadenas, ahora: datetime) -> list[Hallazgo]:
             if any(exitosa(p) or fallida(p) for p in despues):
                 continue
             vivas = [p for p in despues if viva(p)]
-            # La racha: fallas seguidas del workflow desde su última corrida exitosa.
+            # La racha: fallas seguidas desde la última corrida exitosa que hizo este mismo trabajo.
+            # Una exitosa con inputs que no abarcan los de esta no dice nada sobre esta falla.
             racha = []
             for previa in todas:
                 if (previa["created_at"], previa["id"]) > (c["created_at"], c["id"]):
                     break
-                if exitosa(previa):
+                if exitosa(previa) and abarca(inputs_de(previa, wf), ins, wf):
                     racha = []
                 elif fallida(previa):
                     racha.append(previa)

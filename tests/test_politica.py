@@ -4,6 +4,7 @@ from datetime import timedelta
 
 from conftest import AHORA, con_horario, corrida, falla, job, t, titulo
 
+from supervisor import invariantes as inv
 from supervisor.invariantes import instante, iso
 
 FE = "fiscal-extractor"
@@ -299,6 +300,35 @@ def test_desconocida_un_reintento_a_la_hora_y_despues_agente(cadenas, foto_sana,
     dos = foto_sana((FE, rota(3)), (FE, rota(1)), sin=sin)
     [d] = mundo.de(mundo.vuelta(dos, AHORA + timedelta(minutes=40)), "I2")
     assert (d.clase, d.accion) == ("determinista", "agente")
+
+
+# Visto el 2026-11-18 en congreso (corridas 44304671081 y 44317033566): la que publica falla siempre en el
+# mismo paso y, entre un intento y otro, la horaria «solo pedir» termina bien. Esa no corta la racha.
+def test_una_exitosa_de_otros_inputs_no_corta_la_racha(cadenas, foto_sana, mundo):
+    wf = cadenas.workflow("congreso-extractor", "actualizar-congreso.yml")
+    sin = (("congreso-extractor", wf.archivo),)
+    paso = "Agente — leer las páginas que el parser no entendió (1)"
+
+    def rota(hace_h):
+        return corrida(wf.archivo, "failure", hace_h=hace_h, titulo=titulo(wf, publicar="si"),
+                       jobs=falla("actualizar", paso, "el agente no dejó su veredicto"))
+
+    def buena(hace_h, publicar):
+        return ("congreso-extractor", corrida(wf.archivo, hace_h=hace_h, titulo=titulo(wf, publicar=publicar),
+                                              jobs=[job("actualizar"), job("estado pendiente=[false]")]))
+
+    def decision(*corridas):
+        foto = foto_sana(*corridas, sin=sin)
+        [h] = [h for h in inv.evaluar(foto, cadenas, AHORA) if h.invariante == "I2"]
+        return h, mundo.de(mundo.vuelta(foto), "I2")[0]
+
+    primera, segunda = ("congreso-extractor", rota(4)), ("congreso-extractor", rota(1.5))
+    h, d = decision(primera, buena(3, "no"), segunda, buena(0.5, "no"))
+    assert h.repeticiones == 2 and len(h.corridas) == 2
+    assert (d.clase, d.accion) == ("determinista", "agente")
+    # Una exitosa que sí publica entre las dos es otra cosa: la falla empieza de nuevo.
+    h, _ = decision(primera, buena(3, "si"), segunda)
+    assert h.repeticiones == 1
 
 
 # (j) idempotencia: la misma foto con el estado resultante no repite acciones.
