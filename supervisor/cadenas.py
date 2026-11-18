@@ -64,6 +64,7 @@ class Cadenas:
     datos: tuple[dict, ...]
     repos: tuple[str, ...]
     web: dict
+    reparacion: dict = field(default_factory=dict)
 
     @property
     def org(self) -> str:
@@ -84,6 +85,18 @@ class Cadenas:
 
     def encendido(self, invariante: str) -> bool:
         return bool(self.invariantes.get(invariante, False))
+
+    def alcance(self, repo: str | None) -> dict | None:
+        """Lo que el agente de infraestructura puede tocar en ese repo; None = fuera de su alcance."""
+        for r in self.reparacion.get("repos", []):
+            if r["nombre"] == repo:
+                return r
+        return None
+
+    @property
+    def workflow_reparacion(self) -> Workflow | None:
+        archivo = self.reparacion.get("workflow")
+        return self.workflow(self.general["repo_supervisor"], archivo) if archivo else None
 
 
 _LISTAS = ("grupos", "inputs", "inputs_lista", "inputs_uno", "inputs_ignorados", "inputs_manuales",
@@ -109,6 +122,7 @@ def cargar(ruta: str | Path | None = None) -> Cadenas:
         datos=tuple(crudo.get("datos", [])),
         repos=tuple(r["nombre"] for r in crudo.get("repos", [])),
         web=crudo.get("web", {}),
+        reparacion=crudo.get("reparacion", {}),
     )
     validar(cadenas)
     return cadenas
@@ -140,6 +154,18 @@ def validar(c: Cadenas) -> None:
     for lista in ("transitorias", "deterministas"):
         for patron in c.firmas.get(lista, []):
             re.compile(patron)
+    for patron in c.reparacion.get("pasos_protegidos", []):
+        re.compile(patron)
+    if c.reparacion:
+        if c.workflow_reparacion is None:
+            raise ValueError("cadenas.toml: [reparacion] nombra un workflow que no está declarado en este repo")
+        if c.reparacion.get("scripts_con_poder", "lista") not in ("lista", "cerrado"):
+            raise ValueError("cadenas.toml: [reparacion].scripts_con_poder es `lista` o `cerrado`")
+        for r in c.reparacion.get("repos", []):
+            if r["nombre"] == c.general["repo_supervisor"]:
+                raise ValueError("cadenas.toml: el supervisor no se repara a sí mismo")
+            if any(r["nombre"] == d["repo"] for d in c.datos):
+                raise ValueError(f"cadenas.toml: {r['nombre']} es un repo de datos: el agente no lo toca")
     for d in c.datos:
         for pr in d.get("prs", []):
             re.compile(pr["rama"])

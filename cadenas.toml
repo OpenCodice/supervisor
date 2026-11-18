@@ -43,6 +43,9 @@ max_lanzamientos_por_corrida = 3
 max_lanzamientos_24h = 12
 intentos_agente_por_huella = 2
 sesiones_agente_por_dia = 3
+# Los intentos del agente más viejos que esto ya no cuentan: una huella agotada
+# vuelve a tener agente si sigue apareciendo.
+intentos_agente_caducan_dias = 28
 en_cola_max_min = 120
 pr_abierto_max_min = 90
 web_margen_min = 15
@@ -327,6 +330,16 @@ relanzar_sin_inputs = true
 solo_grupo = true
 max_min = 30
 
+# El agente de infraestructura. Se declara para que la regla del único lanzador
+# vea su lugar de espera; I4 cancela una corrida colgada e I11 deja constancia
+# si lleva tres en rojo (no se repara a sí mismo).
+[[workflows]]
+repo = "supervisor"
+archivo = "reparar-infra.yml"
+grupo = "reparar-infra"
+solo_grupo = true
+max_min = 240
+
 # ---------------------------------------------------------------------------
 # Repos de datos. `main` de cada uno entra en I8; sus PR automáticos, en I5.
 #
@@ -386,3 +399,77 @@ nombre = "fiscal-web"
 [web]
 repo = "constitucion-web"
 archivo = "deploy.yml"
+
+# ---------------------------------------------------------------------------
+# Reparación de infraestructura con un agente (reparar-infra.yml).
+#
+# Una huella determinista cuyo repo no está en `repos` queda `agotada` sin
+# gastar sesión: ni este repo, ni las webs, ni los repos de datos.
+# Las rutas son globs: `*` no cruza `/`, `**` sí.
+#
+# permitidos  lo que el arreglo puede modificar (archivos que ya existen).
+# nuevos      lo único que puede crear: pruebas.
+# workers     carpetas de Workers de Cloudflare que se despliegan solos.
+# prohibidos  gana sobre lo anterior, en cualquier repo. Además, ninguna
+#             prueba que ya exista se puede modificar.
+# ---------------------------------------------------------------------------
+
+[reparacion]
+workflow = "reparar-infra.yml"
+max_archivos = 4
+max_lineas = 120
+# En un job con secretos o con permiso de escritura, líneas de `run:` que el
+# arreglo puede cambiar por paso.
+max_lineas_paso_con_poder = 6
+timeout_max_min = 355
+# Horas que se espera el resultado de una sesión antes de darla por perdida.
+sesion_max_h = 4
+# Horas que tiene la corrida de prueba para pasar el paso de la huella.
+prueba_max_h = 12
+# "lista": un script que corre en un paso con secretos se puede tocar si sus
+# líneas nuevas pasan la lista de lo prohibido. "cerrado": no se puede tocar.
+scripts_con_poder = "lista"
+# Pasos que, además de las compuertas de cada workflow, tienen que quedar
+# idénticos (expresiones regulares sobre el nombre del paso).
+pasos_protegidos = ['(?i)compuerta', '(?i)\bgate\b', '(?i)no puede tocar', '(?i)^validar', '(?i)cerco']
+prohibidos = [
+  ".github/workflows/revisar-pr.yml",
+  "extractor/**",
+  "congreso/**",
+  "verificaciones/**",
+  "certs/**",
+  "egress-mx/**",
+  "**/pendientes.json",
+  "**/brief*.md",
+  "scripts/validar_pr.sh",
+  "scripts/validar_commits.py",
+  "scripts/trailers.py",
+  "scripts/impacto.py",
+  "scripts/impacto_corpus.py",
+  "scripts/revision.py",
+  "scripts/reparacion.py",
+  "scripts/expansion.py",
+  "scripts/regresion.py",
+  "scripts/commits*.py",
+  "scripts/agente/cerrar*.sh",
+  "scripts/agente/publicar_registro.sh",
+  "scripts/agente/compuertas_reparar.py",
+  "scripts/agente/proxy_mx.py",
+]
+
+[[reparacion.repos]]
+nombre = "constitucion-extractor"
+permitidos = [".github/workflows/*.yml", "scripts/lanzar_*.sh", "scripts/agente/*.sh", "scheduler/**"]
+nuevos = ["tests/test_infra_*.py", "scheduler/*.test.mjs"]
+workers = ["scheduler"]
+
+[[reparacion.repos]]
+nombre = "fiscal-extractor"
+permitidos = [".github/workflows/*.yml", "scripts/lanzar_*.sh", "scripts/agente/*.sh"]
+nuevos = ["tests/test_infra_*.py"]
+
+[[reparacion.repos]]
+nombre = "congreso-extractor"
+permitidos = [".github/workflows/*.yml", "scripts/lanzar_*.sh", "scripts/agente/*.sh", "archivo/**"]
+nuevos = ["tests/test_infra_*.py", "archivo/*.test.mjs"]
+workers = ["archivo"]
