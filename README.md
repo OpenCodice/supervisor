@@ -52,7 +52,9 @@ Si GitHub rechaza el token en todo (401: venció o se revocó), la vuelta termin
 por sana sin haber visto nada, y el hombre muerto del Worker `scheduler` avisa con su propio token. Las
 demás credenciales del sistema las comprueba cada lunes `credenciales.yml` de `constitucion-extractor`
 (falla si a `PR_TOKEN`, a `CLOUDFLARE_API_TOKEN` o al token del agente les faltan menos de 30 días), y
-el token del `scheduler` lo vigila el propio Worker.
+el token del `scheduler` lo vigila el propio Worker. Una corrida que falla con «Credencial por renovar»
+(`[firmas].credenciales`) no se reintenta ni va al agente de infraestructura: deja su constancia, con la
+fecha, y cada lunes que vuelva a fallar la recuerda en el mismo issue.
 
 ## Horarios y peticiones
 

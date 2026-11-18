@@ -87,6 +87,12 @@ transitorias = [
   # «Alertar fuentes fallidas»: un sitio oficial que no respondió.
   'fuente no se pudo (resolver o )?descargar',
 ]
+# Una credencial vencida o por vencer (`credenciales.yml` y su
+# `scripts/vencimiento.py`): no se reintenta ni va al agente de
+# infraestructura; queda constancia en un issue, con el error tal cual.
+credenciales = [
+  'Credencial por renovar',
+]
 deterministas = [
   'exit code 127',
   'No such file or directory',

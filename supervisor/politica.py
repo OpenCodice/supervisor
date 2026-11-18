@@ -75,7 +75,7 @@ class _Vuelta:
 
 
 def clasificar(falla: dict | None, wf: Workflow | None, cadenas: Cadenas) -> str:
-    """datos | transitoria | determinista | desconocida, sin gastar nada."""
+    """datos | credencial | transitoria | determinista | desconocida, sin gastar nada."""
     if falla is None:
         return "desconocida"
     firma = falla.get("firma", "")
@@ -83,6 +83,8 @@ def clasificar(falla: dict | None, wf: Workflow | None, cadenas: Cadenas) -> str
         if compuerta["paso"] == falla.get("paso") and (
                 "firma" not in compuerta or re.search(compuerta["firma"], firma, re.I)):
             return "datos"
+    if any(re.search(p, firma, re.I) for p in cadenas.firmas.get("credenciales", [])):
+        return "credencial"
     if any(re.search(p, firma, re.I) for p in cadenas.firmas.get("transitorias", [])):
         return "transitoria"
     if any(re.search(p, firma, re.I) for p in cadenas.firmas.get("deterministas", [])):
@@ -560,6 +562,13 @@ def _falla(v: _Vuelta, d: Decision, wf: Workflow | None) -> Decision:
     if d.clase == "datos":
         d.accion, d.motivo = "nada", "falla de una compuerta de datos: la llevan los agentes de las vigilancias"
         return d
+    if d.clase == "credencial":
+        if h.en_vuelo:
+            d.accion, d.motivo = "nada", f"la corrida {h.en_vuelo} está en curso o en espera"
+            return d
+        # Ni reintento ni agente: la renueva una persona. Cada corrida que vuelve a fallar lo recuerda en su issue.
+        corrida = next((c for c in inv.corridas_de(v.foto, h.repo, h.workflow) if str(c["id"]) == h.base), {})
+        return _agotar(d, inv.error_de(corrida) or "una credencial vencida o por vencer: la renueva una persona")
     esperas = v.cadenas.politica.get(f"espera_{d.clase}_h", [1])
     if h.repeticiones > len(esperas):
         if not h.en_vuelo:
@@ -735,9 +744,10 @@ def decidir(hallazgos: list[Hallazgo], huellas: dict, acciones: list, foto: dict
             _lanzar(v, d, wf, 0, accion="desplegar-web")
         elif h.invariante == "I1":
             # Una falla del mismo workflow que espera su reintento manda: la cadencia no se salta esa espera.
+            # Tampoco insiste si falló por una credencial por renovar: relanzarlo no la renueva.
             # Lo que toca por horario no espera a nadie: cada cita se lanza a su hora.
             dueno = None if h.extra.get("horario") else next((
-                o for o in decisiones if o.hallazgo is not None and o.accion == "esperar"
+                o for o in decisiones if o.hallazgo is not None and (o.accion == "esperar" or o.clase == "credencial")
                 and o.hallazgo.invariante in ("I2", "I3", "I6", "I7", "I12")
                 and (o.hallazgo.repo, o.hallazgo.workflow) == (h.repo, h.workflow)
                 and (o.hallazgo.inputs is None or inv.abarca(o.hallazgo.inputs, h.inputs, wf))), None)

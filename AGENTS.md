@@ -141,6 +141,7 @@ el reintento nunca escale.
 | Clase | Regla | Tratamiento |
 |---|---|---|
 | `datos` | el paso es una compuerta de `cadenas.toml` | nada |
+| `credencial` | la firma casa con `[firmas].credenciales` («Credencial por renovar», de `credenciales.yml`) | constancia en un issue con el error tal cual, repetida por cada corrida que vuelve a fallar; ni reintento ni agente. Los hallazgos de I13 llevan la misma clase |
 | `transitoria` | la firma casa con `[firmas].transitorias` | reintentos a 1 h, 6 h y 24 h; a la cuarta, `determinista` |
 | `determinista` | casa con `[firmas].deterministas`, o la huella se repitió tras su reintento | un reintento; si repite, `agente` |
 | `desconocida` | lo demás | un reintento a 1 h; si repite, `determinista` |

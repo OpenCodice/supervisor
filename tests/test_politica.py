@@ -727,6 +727,46 @@ def test_i10_sin_token_sale_sin_observar_y_con_un_sitio_atorado_deja_constancia(
     assert r["estado"].huellas[d.huella]["estado"] == "resuelta" and r["latido"]["invariantes"]["I10"] == "ok"
 
 
+# ---- Una corrida de credenciales.yml que falla por una credencial por vencer: constancia, sin reintento ni agente ----
+
+def test_credencial_por_renovar_deja_constancia_y_no_reintenta_ni_va_al_agente(cadenas, foto_sana, mundo):
+    wf = cadenas.workflow(CE, "credenciales.yml")
+    sin = ((CE, wf.archivo),)
+    error = ("Credencial por renovar: PR_TOKEN vence el 2026-12-08 06:00 UTC, en menos de 30 días. "
+             "Cómo: gh secret set PR_TOKEN --org OpenCodice --visibility all")
+
+    def rota(hace_h):
+        return (CE, corrida(wf.archivo, "failure", hace_h=hace_h, titulo=titulo(wf, origen="supervisor"),
+                            jobs=falla("comprobar", "PR_TOKEN — no vence en los próximos 30 días", f"##[error]{error}")))
+
+    primera = rota(0.2)
+    r = mundo.vuelta(foto_sana(primera, sin=sin))
+    [d] = mundo.de(r, "I2")
+    assert (d.clase, d.accion, d.motivo) == ("credencial", "agotada", error)
+    assert mundo.cliente.lanzamientos() == [] and _issues(mundo) == (1, 0, 0)
+    assert "2026-12-08 06:00 UTC" in mundo.cliente.llamadas[-1][2]["body"]
+    # Sin una corrida exitosa en su ventana, la cadencia tampoco lo relanza: lo vuelve a lanzar su horario.
+    [cadencia] = mundo.de(r, "I1", "credenciales")
+    assert cadencia.accion == "esperar" and d.huella in cadencia.motivo
+    r = mundo.vuelta(foto_sana(primera, sin=sin), AHORA + timedelta(hours=3))
+    assert mundo.de(r, "I2")[0].accion == "nada" and _issues(mundo) == (1, 0, 0)
+
+    # La corrida de la semana siguiente falla igual: misma huella, un recordatorio en el mismo issue.
+    semana = AHORA + timedelta(days=7)
+    otra = (CE, corrida(wf.archivo, "failure", hace_h=-167.8, titulo=titulo(wf, origen="supervisor"),
+                        jobs=falla("comprobar", "PR_TOKEN — no vence en los próximos 30 días", f"##[error]{error}")))
+    r = mundo.vuelta(foto_sana(primera, otra, sin=sin), semana)
+    [otro] = mundo.de(r, "I2")
+    assert otro.huella == d.huella and otro.accion == "agotada" and _issues(mundo) == (1, 1, 0)
+    assert not [destino for destino, _ in mundo.cliente.lanzamientos() if "credenciales" in destino]
+
+    # Renovada: la corrida siguiente pasa y el issue se cierra.
+    buena = (CE, corrida(wf.archivo, hace_h=-168.5, titulo=titulo(wf, origen="supervisor"),
+                         jobs=[job("comprobar"), job("estado pendiente=[false]")]))
+    r = mundo.vuelta(foto_sana(primera, otra, buena, sin=sin), semana + timedelta(hours=1))
+    assert r["estado"].huellas[d.huella]["estado"] == "resuelta" and _issues(mundo) == (1, 2, 1)
+
+
 # ---- I13: una credencial por vencer deja constancia, la recuerda cada semana y se cierra al renovarla ----
 
 def _vence(foto, cuando, **cambios):

@@ -278,6 +278,16 @@ def falla_de(c: dict) -> dict | None:
     return {"job": "", "paso": "", "firma": c.get("conclusion") or ""}
 
 
+def error_de(c: dict) -> str | None:
+    """El primer error que escribió el job que falló, tal cual (sin normalizar); None si la foto no lo trae."""
+    for j in sorted(c.get("jobs") or [], key=lambda j: (j.get("completed_at") or "", j.get("id") or 0)):
+        if j.get("conclusion") in ("failure", "timed_out"):
+            for linea in j.get("log") or []:
+                if linea.startswith("##[error]"):
+                    return linea.removeprefix("##[error]").strip()
+    return None
+
+
 def _misma_falla(a: dict | None, b: dict | None) -> bool:
     return a is not None and b is not None and (a["job"], a["paso"], a["firma"]) == (b["job"], b["paso"], b["firma"])
 

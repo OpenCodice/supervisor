@@ -192,7 +192,7 @@ def validar(c: Cadenas) -> None:
                 re.compile(comp["firma"])
         for t in w.titulos_previos:
             re.compile(t["patron"])
-    for lista in ("transitorias", "deterministas"):
+    for lista in ("transitorias", "deterministas", "credenciales"):
         for patron in c.firmas.get(lista, []):
             re.compile(patron)
     for patron in c.reparacion.get("pasos_protegidos", []):
