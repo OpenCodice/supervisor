@@ -1,9 +1,9 @@
 {
   "acciones": {
-    "lanzar": 3
+    "lanzar": 2
   },
-  "cuando": "2026-11-18T11:15:39Z",
-  "huellas_abiertas": 3,
+  "cuando": "2026-11-18T11:30:39Z",
+  "huellas_abiertas": 2,
   "invariantes": {
     "I1": "ok",
     "I10": "apagada",
@@ -13,11 +13,11 @@
     "I4": "ok",
     "I5": "ok",
     "I6": "ok",
-    "I7": "rota:1",
+    "I7": "apagada",
     "I8": "ok",
-    "I9": "apagada"
+    "I9": "ok"
   },
-  "modo": "informe",
+  "modo": "actuar",
   "sin_observar": [
     "constitucion-web",
     "fiscal-web"
