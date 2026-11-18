@@ -1,0 +1,51 @@
+﻿2026-11-18T05:49:53.4462513Z Current runner version: '2.338.2'
+2026-11-18T05:49:53.4482676Z ##[group]Runner Image Provisioner
+2026-11-18T05:49:53.4483340Z Hosted Compute Agent
+2026-11-18T05:49:53.4483813Z Version: 20261103.629
+2026-11-18T05:49:53.4484549Z Commit: 15dbd9ccb5dbf34fae002b6ed1a2670f52df37bc
+2026-11-18T05:49:53.4485071Z Build Date: 2026-11-03T17:26:59Z
+2026-11-18T06:37:25.2057593Z   pythonLocation: /opt/hostedtoolcache/Python/3.12.16/x64
+2026-11-18T06:37:25.2057935Z   PKG_CONFIG_PATH: /opt/hostedtoolcache/Python/3.12.16/x64/lib/pkgconfig
+2026-11-18T06:37:25.2058280Z   Python_ROOT_DIR: /opt/hostedtoolcache/Python/3.12.16/x64
+2026-11-18T06:37:25.2058599Z   Python2_ROOT_DIR: /opt/hostedtoolcache/Python/3.12.16/x64
+2026-11-18T06:37:25.2058910Z   Python3_ROOT_DIR: /opt/hostedtoolcache/Python/3.12.16/x64
+2026-11-18T06:37:25.2059234Z   LD_LIBRARY_PATH: /opt/hostedtoolcache/Python/3.12.16/x64/lib
+2026-11-18T06:37:25.2059960Z   EXTRACTOR_TOKEN: ***
+2026-11-18T06:37:25.2060188Z   EXTRACTOR_SLUG: OpenCodice/fiscal-extractor
+2026-11-18T06:37:25.2060543Z   FUERA_SHA: c3d526c8733ac3d59bb52c26d3b13de4ceebb1e49e2b57ea766fab862aa09016
+2026-11-18T06:37:25.2060859Z ##[endgroup]
+2026-11-18T06:37:25.5556883Z → LEYES nuevo-leon/ley-de-asentamientos-humanos-ordenamiento-territorial-y-desarrollo-urbano, nuevo-leon/ley-de-gobierno-municipal, nuevo-leon/ley-de-justicia-administrativa-para-el-estado-y-municipios, nuevo-leon/ley-de-responsabilidades-administrativas, nuevo-leon/ley-organica-de-la-administracion-publica
+2026-11-18T06:37:30.4556752Z De FUERA a LEYES: nuevo-leon/ley-de-asentamientos-humanos-ordenamiento-territorial-y-desarrollo-urbano nuevo-leon/ley-de-gobierno-municipal nuevo-leon/ley-de-justicia-administrativa-para-el-estado-y-municipios nuevo-leon/ley-de-responsabilidades-administrativas nuevo-leon/ley-organica-de-la-administracion-publica
+2026-11-18T06:37:30.4594322Z ##[group]Run bash "$GITHUB_WORKSPACE/scripts/lanzar_vigilancia_estatal.sh"
+2026-11-18T06:37:30.4594766Z [36;1mbash "$GITHUB_WORKSPACE/scripts/lanzar_vigilancia_estatal.sh"[0m
+2026-11-18T06:37:30.4613246Z shell: /usr/bin/bash -e {0}
+2026-11-18T06:37:30.4613479Z env:
+2026-11-18T06:37:30.4613756Z   EXTRACTOR_REPO: https://github.com/OpenCodice/fiscal-extractor.git
+2026-11-18T06:37:30.4614210Z   DATOS: OpenCodice/leyes-estatales
+2026-11-18T06:37:30.4614479Z   RAMA: reforma/leyes-estatales
+2026-11-18T06:37:30.4614703Z   TIENE_CLAUDE: true
+2026-11-18T06:37:30.4614945Z   OUT: /home/runner/work/fiscal-extractor/fiscal-extractor
+2026-11-18T06:37:30.4615220Z   AGENTE_DIR: /tmp/agente
+2026-11-18T06:37:30.4615434Z   REPARACION_CORPUS: estatal
+2026-11-18T06:37:30.4615659Z   REPARACION_GATE: /tmp/reparacion-gate
+2026-11-18T06:37:30.4615907Z   PDF_CACHE: /tmp/pdfs-corpus
+2026-11-18T06:37:30.4616189Z   pythonLocation: /opt/hostedtoolcache/Python/3.12.16/x64
+2026-11-18T06:37:30.4616562Z   PKG_CONFIG_PATH: /opt/hostedtoolcache/Python/3.12.16/x64/lib/pkgconfig
+2026-11-18T06:37:30.4616914Z   Python_ROOT_DIR: /opt/hostedtoolcache/Python/3.12.16/x64
+2026-11-18T06:37:30.4617237Z   Python2_ROOT_DIR: /opt/hostedtoolcache/Python/3.12.16/x64
+2026-11-18T06:37:30.4617556Z   Python3_ROOT_DIR: /opt/hostedtoolcache/Python/3.12.16/x64
+2026-11-18T06:37:30.4617883Z   LD_LIBRARY_PATH: /opt/hostedtoolcache/Python/3.12.16/x64/lib
+2026-11-18T06:37:30.4620064Z   GH_TOKEN: ***
+2026-11-18T06:37:30.4620258Z ##[endgroup]
+2026-11-18T06:37:30.4668448Z bash: /home/runner/work/fiscal-extractor/fiscal-extractor/scripts/lanzar_vigilancia_estatal.sh: No such file or directory
+2026-11-18T06:37:30.4679750Z ##[error]Process completed with exit code 127.
+2026-11-18T06:37:30.4736476Z ##[group]Run actions/upload-artifact@v4
+2026-11-18T06:37:30.4736726Z with:
+2026-11-18T06:37:30.4736910Z   name: reparacion
+2026-11-18T06:37:30.4738045Z   path: /tmp/agente/reparacion/*.json
+/tmp/agente/reparacion/*.md
+/tmp/agente/reparacion/*.txt
+/tmp/agente/reparacion/*.log
+/tmp/agente/reparacion/*.patch
+/tmp/agente/reparacion/impacto/resumen.json
+/tmp/agente/reparacion/impacto/pendientes.json

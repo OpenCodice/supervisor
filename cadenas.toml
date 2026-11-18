@@ -1,0 +1,386 @@
+# Lo declarado: qué se vigila y con qué límites. El código de supervisor/ no
+# conoce ningún workflow por nombre; todo sale de aquí.
+
+[general]
+org = "OpenCodice"
+repo_supervisor = "supervisor"
+# Días de corridas que entran en la foto. Cubre la ventana más larga que se
+# evalúa con la lista (8 días); las más largas piden su última exitosa aparte.
+dias_foto = 9
+# Corridas sin éxito por repo cuyos jobs se leen en cada vuelta, de la más
+# nueva a la más vieja.
+max_corridas_con_jobs = 40
+lineas_log = 40
+
+[invariantes]
+I1 = true    # cadencia
+I2 = true    # toda falla tiene dueño
+I3 = true    # nada se pierde en la cola
+I4 = true    # nada se atora
+I5 = true    # ningún PR automático queda abierto
+I6 = true    # trabajo pendiente declarado
+I7 = true    # extractor nuevo ⇒ reintento
+I8 = true    # la web está al día
+I9 = false   # los relojes viven: se enciende cuando el Worker lance supervisor.yml
+I10 = false  # los Workers avanzan: falta GET /salud en congreso-archivo
+I11 = true   # rojo crónico
+
+[politica]
+# Horas de espera antes de cada reintento, según cuántas veces seguidas se ha
+# visto la misma huella.
+espera_transitoria_h = [1, 6, 24]
+espera_desconocida_h = [1]
+espera_determinista_h = [0]
+# Entre lanzamientos por cadencia (I1) mientras no haya una corrida exitosa.
+espera_cadencia_h = [1, 6, 24]
+# Tiempo que se le da a un lanzamiento para aparecer en la lista de corridas.
+gracia_lanzamiento_min = 30
+# Lanzamientos seguidos sobre la misma corrida sin que aparezca una nueva.
+max_lanzamientos_por_corrida = 3
+# Cortacircuitos: lanzamientos del supervisor a un mismo workflow en 24 h.
+max_lanzamientos_24h = 12
+intentos_agente_por_huella = 2
+sesiones_agente_por_dia = 3
+en_cola_max_min = 120
+pr_abierto_max_min = 90
+web_margen_min = 15
+cronico_corridas = 3
+relojes_max_h = 3
+# Minutos después de su hora en que todavía se lanza lo que tocaba por horario.
+tolerancia_horario_min = 180
+
+[firmas]
+# Expresiones regulares sobre la firma normalizada (sin distinguir mayúsculas).
+transitorias = [
+  'Connection refused',
+  'Connection reset',
+  'timed out',
+  'IncompleteRead',
+  'HTTP (Error )?5\d\d',
+  '\b429\b',
+  'curl: \((6|7|28|35|56)\)',
+  'rate limit',
+  'usage limit',
+  'Temporary failure in name resolution',
+  # «Alertar fuentes fallidas»: un sitio oficial que no respondió.
+  'fuente no se pudo (resolver o )?descargar',
+]
+deterministas = [
+  'exit code 127',
+  'No such file or directory',
+  'command not found',
+  'unbound variable',
+  'HTTP 422',
+  'Invalid workflow file',
+  'startup_failure',
+  'permission denied',
+]
+
+# ---------------------------------------------------------------------------
+# Workflows vigilados.
+#
+# grupo            grupo de concurrency (por repo): quien lo comparte, comparte
+#                  el único lugar de espera.
+# grupos           casos en que el grupo depende de los inputs.
+# inputs           los que declara, en el orden del run-name del contrato.
+# inputs_lista     listas separadas por espacio; vacío = todo, que abarca
+#                  cualquier lista. Se pueden unir.
+# inputs_uno       un valor o vacío = todos; dos valores distintos se unen en
+#                  vacío.
+# inputs_ignorados no cambian qué trabajo hace la corrida.
+# inputs_manuales  con un valor distinto del de omisión es una prueba a mano:
+#                  ni se relanza ni cuenta para la cadencia.
+# omision          valor por omisión de los que no son cadena vacía.
+# relanzar_sin_inputs  una corrida de inputs desconocidos (anterior al
+#                  contrato, push, schedule) se puede relanzar sin inputs.
+# encadenado       termina con el job `estado pendiente=[…]` (I6).
+# cadencias        I1: cada una exige una corrida exitosa dentro de su ventana
+#                  con esos inputs.
+# horario          cuándo toca lanzarlo (UTC). Con lanza_horario = false solo
+#                  se documenta: el Worker scheduler todavía los lanza.
+# max_min          minutos que una corrida puede estar en curso (I4).
+# compuertas       pasos que fallan a propósito por los datos o por el
+#                  extractor: clase `datos`, el supervisor no los toca. Con
+#                  `firma`, solo si la firma casa.
+# extractor_nuevo  I7: se relanza cuando main cambia en estas rutas después
+#                  del inicio de su última corrida exitosa.
+# ---------------------------------------------------------------------------
+
+[[workflows]]
+repo = "constitucion-extractor"
+archivo = "vigilar-cpeum.yml"
+grupo = "vigilar-constitucion-mexicana"
+inputs = ["reintento", "origen"]
+inputs_ignorados = ["reintento", "origen"]
+omision = { reintento = "false" }
+relanzar_sin_inputs = true
+encadenado = true
+cadencias = [{ ventana_h = 192 }]
+horario = [{ dias = ["lun"], hora = "09:00" }]
+lanza_horario = false
+max_min = 420
+compuertas = [
+  { paso = "Compuertas del arreglo del agente" },
+  { paso = "Validar invariantes y trailers en la cabeza del PR (GATE)" },
+  { paso = "Publicar el check y fusionar si quedó verificado", firma = "no pasó la validación" },
+]
+
+[[workflows]]
+repo = "constitucion-extractor"
+archivo = "vigilar-estatales.yml"
+grupo = "vigilar-leyes-estatales"
+inputs = ["reintento", "estado", "pdf_url", "origen"]
+inputs_uno = ["estado"]
+inputs_ignorados = ["reintento", "origen"]
+inputs_manuales = ["pdf_url"]
+omision = { reintento = "false" }
+relanzar_sin_inputs = true
+encadenado = true
+cadencias = [{ ventana_h = 192 }]
+horario = [{ dias = ["lun"], hora = "09:00" }]
+lanza_horario = false
+max_min = 420
+compuertas = [
+  { paso = "Compuertas del arreglo del agente" },
+  { paso = "Validar invariantes y trailers en la cabeza del PR (GATE)" },
+  { paso = "Publicar el check y fusionar si quedó verificado", firma = "no pasó la validación" },
+]
+
+[[workflows]]
+repo = "constitucion-extractor"
+archivo = "impacto.yml"
+grupo = "impacto-constitucion-extractor"
+inputs = []
+relanzar_sin_inputs = true
+max_min = 270
+compuertas = [{ paso = "Resultado", firma = "no quedaron confirmadas" }]
+
+[[workflows]]
+repo = "constitucion-extractor"
+archivo = "credenciales.yml"
+inputs = ["origen"]
+inputs_ignorados = ["origen"]
+relanzar_sin_inputs = true
+cadencias = [{ ventana_h = 768 }]
+max_min = 60
+
+[[workflows]]
+repo = "fiscal-extractor"
+archivo = "vigilar-fiscal.yml"
+grupo = "vigilar-fiscal-mexicano"
+inputs = ["reintento", "origen"]
+inputs_ignorados = ["reintento", "origen"]
+omision = { reintento = "false" }
+relanzar_sin_inputs = true
+encadenado = true
+cadencias = [{ ventana_h = 192 }]
+horario = [{ dias = ["lun"], hora = "09:00" }]
+lanza_horario = false
+max_min = 420
+compuertas = [
+  { paso = "Compuertas del arreglo del agente" },
+  { paso = "Validar invariantes (gate)" },
+  { paso = "Validar invariantes y trailers en la cabeza del PR (GATE)" },
+  { paso = "Publicar el check y fusionar si quedó verificado", firma = "no pasó la validación" },
+]
+
+[[workflows]]
+repo = "fiscal-extractor"
+archivo = "vigilar-federal.yml"
+grupo = "vigilar-leyes-federales"
+inputs = ["reintento", "docs", "lote", "origen"]
+inputs_lista = ["docs"]
+inputs_ignorados = ["reintento", "lote", "origen"]
+omision = { reintento = "false", lote = "40" }
+relanzar_sin_inputs = true
+encadenado = true
+cadencias = [{ ventana_h = 192 }]
+horario = [{ dias = ["lun"], hora = "13:00" }]
+lanza_horario = false
+max_min = 1020
+extractor_nuevo = ["extractor"]
+compuertas = [
+  # El PR anterior sigue abierto: lo resuelve I5 (revisar o cerrar el PR).
+  { paso = "Esperar a que se fusione el PR de la corrida anterior" },
+  { paso = "Compuertas del arreglo" },
+  { paso = "Lo que la revisión no puede tocar" },
+  { paso = "Lo que el agente no puede tocar" },
+  { paso = "Validar invariantes (gate)" },
+  { paso = "Validar invariantes y trailers en la cabeza del PR (GATE)" },
+  { paso = "Publicar el check y fusionar si quedó verificado", firma = "no pasó la validación" },
+]
+
+[[workflows]]
+repo = "fiscal-extractor"
+archivo = "vigilar-leyes-estatales.yml"
+grupo = "vigilar-leyes-estatales"
+inputs = ["reintento", "docs", "estados", "lote", "revisar", "origen"]
+inputs_lista = ["docs", "estados", "revisar"]
+inputs_ignorados = ["reintento", "lote", "origen"]
+omision = { reintento = "false", lote = "8" }
+relanzar_sin_inputs = true
+encadenado = true
+cadencias = [{ ventana_h = 192 }]
+horario = [{ dias = ["lun"], hora = "13:00" }]
+lanza_horario = false
+max_min = 870
+extractor_nuevo = ["extractor"]
+compuertas = [
+  { paso = "Esperar a que se fusione el PR de la corrida anterior" },
+  { paso = "Compuertas del arreglo" },
+  { paso = "Lo que la revisión no puede tocar" },
+  { paso = "Lo que el agente no puede tocar" },
+  { paso = "Validar invariantes (gate)" },
+  { paso = "Validar invariantes y trailers en la cabeza del PR (GATE)" },
+  { paso = "Publicar el check y fusionar si quedó verificado", firma = "no pasó la validación" },
+]
+
+[[workflows]]
+repo = "fiscal-extractor"
+archivo = "expandir-estatales.yml"
+grupo = "expandir-estatales"
+inputs = ["estado", "sin_esperar", "ensayo", "simular", "simular_texto", "redeclarar", "origen"]
+inputs_ignorados = ["origen"]
+inputs_manuales = ["sin_esperar", "ensayo", "simular", "simular_texto"]
+omision = { sin_esperar = "false", ensayo = "false" }
+relanzar_sin_inputs = true
+encadenado = true
+cadencias = [{ ventana_h = 192 }]
+horario = [{ dias = ["mie"], hora = "15:30" }]
+lanza_horario = false
+max_min = 720
+compuertas = [
+  { paso = "Lo que el agente no puede tocar" },
+  { paso = "Compuertas — forma del módulo y pruebas" },
+  { paso = "Compuertas — descargar cada PDF desde un clon limpio" },
+  { paso = "Compuertas — cada ley redeclarada se descarga" },
+  { paso = "Compuertas — build y auditar; lo que no quede limpio, a FUERA" },
+  { paso = "Compuertas — nada de lo publicado cambia" },
+  { paso = "Compuertas del arreglo" },
+]
+
+[[workflows]]
+repo = "fiscal-extractor"
+archivo = "impacto.yml"
+grupo = "impacto-fiscal-extractor"
+inputs = []
+relanzar_sin_inputs = true
+max_min = 360
+compuertas = [{ paso = "Resultado", firma = "no quedaron confirmadas" }]
+
+[[workflows]]
+repo = "congreso-extractor"
+archivo = "actualizar-congreso.yml"
+grupo = "actualizar-congreso"
+# Las corridas «solo pedir» de cada hora no compiten por el lugar de espera de
+# la que publica.
+grupos = [{ inputs = { publicar = "no" }, grupo = "actualizar-congreso-pedir" }]
+inputs = ["legislatura", "publicar", "origen"]
+inputs_ignorados = ["origen"]
+omision = { legislatura = "66", publicar = "si" }
+# Sin inputs publica (publicar=si por omisión): no es lo mismo que una corrida
+# «solo pedir», así que una de inputs desconocidos no se relanza.
+relanzar_sin_inputs = false
+encadenado = true
+cadencias = [
+  { ventana_h = 3 },
+  { ventana_h = 26, inputs = { publicar = "si" } },
+]
+horario = [
+  { dias = ["*"], hora = "*:00", inputs = { publicar = "no" } },
+  { dias = ["*"], hora = "18:00", inputs = { publicar = "si" } },
+]
+lanza_horario = false
+max_min = 150
+# Títulos anteriores al contrato de run-name.
+titulos_previos = [
+  { patron = '^Actualizar congreso-mexicano \(solo pedir\)$', inputs = { publicar = "no" } },
+  { patron = '^Actualizar congreso-mexicano$', inputs = { publicar = "si" } },
+]
+compuertas = [
+  { paso = "Pruebas" },
+  { paso = "Verificar las lecturas (1)" },
+  { paso = "Verificar las lecturas (2)" },
+  { paso = "Validar (GATE)" },
+  { paso = "Validar invariantes y commits en la cabeza del PR (GATE)" },
+  { paso = "Fusionar si quedó validado y es de datos", firma = "no pasó la validación" },
+]
+
+# Cuando tiene trabajo comparte grupo con la actualización que publica: se
+# declara para que la regla del único lanzador vea su lugar de espera. Lo
+# dispara workflow_run; I11 lo cubre.
+[[workflows]]
+repo = "congreso-extractor"
+archivo = "resolver-residuos.yml"
+grupo = "actualizar-congreso"
+solo_grupo = true
+
+[[workflows]]
+repo = "constitucion-web"
+archivo = "deploy.yml"
+grupo = "deploy"
+cancela_en_curso = true
+inputs = []
+relanzar_sin_inputs = true
+solo_grupo = true
+max_min = 30
+
+# ---------------------------------------------------------------------------
+# Repos de datos. `main` de cada uno entra en I8; sus PR automáticos, en I5.
+#
+# rama        expresión regular de la rama del PR.
+# vigilancia  el workflow que abre ese PR: mientras tenga una corrida viva, el
+#             PR no está atorado; al cerrarlo, se relanza.
+# revisor     revisar-pr.yml que lo valida y fusiona (el único que fusiona).
+# ---------------------------------------------------------------------------
+
+[[datos]]
+repo = "constitucion-mexicana"
+prs = [
+  { etiqueta = "automatico", rama = '^reforma/cpeum-deteccion-automatica$', prefijo = "reforma/", vigilancia = { repo = "constitucion-extractor", archivo = "vigilar-cpeum.yml" }, revisor = { repo = "constitucion-extractor", archivo = "revisar-pr.yml" } },
+]
+
+[[datos]]
+repo = "leyes-estatales"
+prs = [
+  { etiqueta = "automatico", rama = '^reforma/.+-deteccion-automatica$', prefijo = "reforma/", vigilancia = { repo = "constitucion-extractor", archivo = "vigilar-estatales.yml" }, revisor = { repo = "constitucion-extractor", archivo = "revisar-pr.yml" } },
+  { etiqueta = "automatico", rama = '^reforma/leyes-estatales$', prefijo = "reforma/", vigilancia = { repo = "fiscal-extractor", archivo = "vigilar-leyes-estatales.yml" }, revisor = { repo = "fiscal-extractor", archivo = "revisar-pr.yml" } },
+]
+
+[[datos]]
+repo = "fiscal-mexicano"
+prs = [
+  { etiqueta = "automatico", rama = '^actualizacion/corpus-fiscal-automatica$', prefijo = "actualizacion/", vigilancia = { repo = "fiscal-extractor", archivo = "vigilar-fiscal.yml" }, revisor = { repo = "fiscal-extractor", archivo = "revisar-pr.yml" } },
+]
+
+[[datos]]
+repo = "leyes-federales"
+prs = [
+  { etiqueta = "automatico", rama = '^actualizacion/leyes-federales$', prefijo = "actualizacion/", vigilancia = { repo = "fiscal-extractor", archivo = "vigilar-federal.yml" }, revisor = { repo = "fiscal-extractor", archivo = "revisar-pr.yml" } },
+]
+
+# El revisor de congreso solo recibe `pr`, y sus PR llevan `verificado`.
+[[datos]]
+repo = "congreso-mexicano"
+prs = [
+  { etiqueta = "verificado", rama = '^datos/', vigilancia = { repo = "congreso-extractor", archivo = "actualizar-congreso.yml", inputs = { publicar = "si" } }, revisor = { repo = "congreso-extractor", archivo = "revisar-pr.yml" } },
+]
+
+# ---------------------------------------------------------------------------
+# Otros repos con workflows: solo I11 (rojo crónico) y, en la web, I8.
+# ---------------------------------------------------------------------------
+
+[[repos]]
+nombre = "constitucion-extractor"
+[[repos]]
+nombre = "fiscal-extractor"
+[[repos]]
+nombre = "congreso-extractor"
+[[repos]]
+nombre = "constitucion-web"
+[[repos]]
+nombre = "fiscal-web"
+
+[web]
+repo = "constitucion-web"
+archivo = "deploy.yml"
