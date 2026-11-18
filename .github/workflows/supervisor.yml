@@ -1,0 +1,76 @@
+name: Supervisor
+# El título lleva los inputs: la API no los devuelve, y el invariante I9 lee de
+# aquí quién lanzó cada vuelta.
+run-name: "supervisor origen=[${{ inputs.origen }}]"
+
+# Una vuelta del reconciliador: observa las corridas, los PR y los commits de la
+# organización, evalúa los invariantes de cadenas.toml y relanza lo que falte.
+# La lanza el Worker `scheduler` cada 15 minutos; el cron de aquí es un segundo
+# reloj, que falla por causas distintas.
+#
+# Con el secret SUPERVISOR_TOKEN actúa; sin él corre en modo informe con el
+# token del job (los repos son públicos: lectura sin más) y solo escribe
+# estado/ y el resumen.
+on:
+  workflow_dispatch:
+    inputs:
+      origen:
+        description: 'Quién lanzó la corrida (scheduler); vacío = a mano'
+        required: false
+        default: ''
+  schedule:
+    - cron: '17 */6 * * *'
+
+# Dos vueltas a la vez decidirían sobre el mismo estado.
+concurrency:
+  group: supervisor
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  supervisar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      ACTUA: ${{ secrets.SUPERVISOR_TOKEN != '' }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Jobs de corridas ya terminadas (no cambian)
+        uses: actions/cache@v4
+        with:
+          path: .cache/fotos
+          key: fotos-${{ github.run_id }}
+          restore-keys: fotos-
+      - name: Observar, evaluar y actuar
+        env:
+          GITHUB_TOKEN: ${{ secrets.SUPERVISOR_TOKEN || github.token }}
+        run: |
+          modo=informe
+          if [ "$ACTUA" = true ]; then modo=actuar; fi
+          python -m supervisor correr --modo "$modo" --cache .cache/fotos
+          find .cache/fotos -type f -mtime +12 -delete
+      - name: Guardar el estado
+        run: |
+          git add estado
+          if git diff --cached --quiet; then
+            echo "Sin novedades."
+            exit 0
+          fi
+          git config user.name "opencodice-ci"
+          git config user.email "opencodice-ci@users.noreply.github.com"
+          git commit -q -m "Estado del supervisor ($(date -u +%Y-%m-%dT%H:%MZ))"
+          for i in 1 2 3; do
+            if git pull -q --rebase origin main && git push -q origin HEAD:main; then
+              exit 0
+            fi
+            git rebase --abort 2>/dev/null
+            sleep $((i * 5))
+          done
+          echo "::error::No se pudo guardar el estado tras tres intentos."
+          exit 1
