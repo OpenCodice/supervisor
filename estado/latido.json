@@ -1,12 +1,15 @@
 {
-  "acciones": {},
-  "cuando": "2026-11-18T18:15:27Z",
-  "huellas_abiertas": 1,
+  "acciones": {
+    "desplegar-web": 1,
+    "lanzar": 1
+  },
+  "cuando": "2026-11-18T18:45:29Z",
+  "huellas_abiertas": 3,
   "invariantes": {
     "I1": "ok",
     "I10": "ok",
     "I11": "ok",
-    "I12": "ok",
+    "I12": "rota:1",
     "I13": "ok",
     "I2": "rota:1",
     "I3": "ok",
@@ -14,7 +17,7 @@
     "I5": "ok",
     "I6": "ok",
     "I7": "apagada",
-    "I8": "ok",
+    "I8": "rota:1",
     "I9": "ok"
   },
   "modo": "actuar",
