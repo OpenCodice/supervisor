@@ -1,0 +1,3 @@
+# Dos workflows agregan líneas a estos archivos (supervisor.yml y reparar-infra.yml):
+# al rebasar se conservan las de los dos.
+estado/*.jsonl merge=union
