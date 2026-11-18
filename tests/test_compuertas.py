@@ -289,6 +289,7 @@ def test_en_un_paso_con_poder_no_se_quita_ni_se_agrega_codigo(juzgar):
     assert any("quita líneas" in d for d in juzgar({VLE: con(DESPUES, viejo, "")}).de("poder"))
     r = juzgar({VLE: con(DESPUES, viejo, viejo + '            cp "$AGENTE_DIR/fuera.json" /tmp/copia.json\n')})
     assert any("agrega `cp" in d for d in r.de("poder"))
+    assert any("agrega `set -x`" in d for d in juzgar({VLE: con(DESPUES, viejo, "            set -x\n" + viejo)}).de("poder"))
     # Comillas, comentarios y `set -e` sí.
     bien = con(DESPUES, viejo, '            # ya no sirve\n            set -euo pipefail\n            rm -f "$AGENTE_DIR"/fuera.json\n')
     assert juzgar({VLE: bien}).de("poder") == []
@@ -339,7 +340,7 @@ def test_en_un_job_sin_poder_el_run_se_puede_arreglar(juzgar):
     bien = con(SIN_PODER[TESTS], CLONA, CLONA + "          pip install -q -r /tmp/supervisor/requirements.txt\n")
     r = juzgar({TESTS: bien}, base=SIN_PODER, huella=H_TESTS)
     assert r.fallas == []
-    paso = "      - name: Dependencias\n        run: pip install -q pyyaml\n      - name: Lint del supervisor\n"
+    paso = "      - name: Dependencias\n        run: pip install -q -r requirements.txt\n      - name: Lint del supervisor\n"
     assert juzgar({TESTS: con(SIN_PODER[TESTS], "      - name: Lint del supervisor\n", paso)}, base=SIN_PODER, huella=H_TESTS).pasa
 
 
@@ -367,6 +368,16 @@ def test_en_un_job_sin_poder_tampoco_entran_acciones_ni_secretos(juzgar):
     ('echo "X=1" >> "$GITHUB_ENV"', "lee o cambia el entorno"),
     ("export HTTPS_PROXY=x", "desvía la red"),
     ("exec 3<>/dev/tcp/x/80", "una herramienta de red"),
+    ('echo "${!nombre}"', "lee o cambia el entorno"),
+    ("set -x", "lee o cambia el entorno"),
+    ("set | sort", "lee o cambia el entorno"),
+    ("cat .git/config", "lee o cambia el entorno"),
+    ("pip install -q pyyaml", "instala o eleva"),
+    ("npx --yes paquete", "instala o eleva"),
+    ("sudo gdb -p 1", "instala o eleva"),
+    ("python3 -c 'import os'", "un intérprete en línea"),
+    ("          import urllib.request", "red o serialización en Python"),
+    ("git push origin HEAD:otra", "git o gh hacia fuera"),
 ])
 def test_lo_prohibido_en_una_linea_nueva_de_un_workflow(juzgar, linea, regla):
     malo = con(SIN_PODER[TESTS], CLONA, CLONA + f"          {linea}\n")
@@ -390,7 +401,7 @@ def test_lo_prohibido_ademas_en_un_script(juzgar, linea, regla):
 
 def test_una_prueba_nueva_no_trae_red(juzgar):
     prueba = "import urllib.request\n\ndef test_x():\n    urllib.request.urlopen('https://recolector.example.com/')\n"
-    bien = con(SIN_PODER[TESTS], CLONA, CLONA + "          pip install -q pyyaml\n")
+    bien = con(SIN_PODER[TESTS], CLONA, CLONA + "          pip install -q -r /tmp/supervisor/requirements.txt\n")
     r = juzgar({TESTS: bien, "tests/test_infra_lint.py": prueba}, base=SIN_PODER, huella=H_TESTS)
     assert any("red o serialización en Python" in d for d in r.de("lineas"))
     assert any("host o URL nuevo" in d for d in r.de("lineas"))

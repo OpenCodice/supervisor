@@ -16,7 +16,8 @@ herramienta, un archivo no se deja leer) cuenta como falla.
              del que depende uno que los tiene) un `run:` solo cambia de las
              formas de `_run_con_poder`.
 - lineas     lo prohibido en cualquier línea añadida: red, hosts nuevos,
-             codificación, TLS, esconder una falla, secretos, entorno.
+             codificación, TLS, esconder una falla, secretos, entorno,
+             intérpretes en línea, instalar paquetes, git o gh hacia fuera.
 - contenido  el arreglo toca el archivo del paso de la huella o uno que ese
              paso invoca, y nada más.
 - worker     en un Worker: ni bindings, ni rutas, ni nombres de `env.`, ni
@@ -396,7 +397,8 @@ def _on(a, d) -> str | None:
 _COMILLAS = str.maketrans("", "", "\"'")
 _RUTA_SEGURA = re.compile(r"[A-Za-z0-9_$/.~-]+")
 _LINEA_INOCUA = re.compile(r"\s*(#.*)?")
-_LINEA_SEGURA = re.compile(r"\s*(set -[euxo]+( pipefail)?|mkdir -p [A-Za-z0-9_$/.\"-]+)\s*")
+# Sin `set -x`: la traza escribe en el log valores derivados de un secreto, que GitHub no enmascara.
+_LINEA_SEGURA = re.compile(r"\s*(set -[euo]+( pipefail)?|mkdir -p [A-Za-z0-9_$/.\"-]+)\s*")
 
 
 def _misma_invocacion(vieja: str, nueva: str, antes: Path) -> bool:
@@ -665,18 +667,21 @@ _PROHIBIDO = [
         r"secrets\.|github\.token|TOKEN|SECRET|PASSW|CREDENTIAL|x-access-token|[Aa]uthorization|Bearer|\.netrc"
         r"|git-credentials|extraheader")),
     ("lee o cambia el entorno", re.compile(
-        r"(?:^|[\s;|&(`])(?:env|printenv)(?:\s|$)|export\s+-p|declare\s+-[px]|\bcompgen\b|/proc/|\benviron\b"
-        r"|GITHUB_ENV|GITHUB_PATH|BASH_ENV|LD_PRELOAD|PROMPT_COMMAND")),
+        r"(?:^|[\s;|&(`])(?:env|printenv)(?:\s|$)|export\s+-p|declare\s+-[px]|\bcompgen\b|\btypeset\b|/proc/"
+        r"|\benviron\b|process\.env|^\s*(?:set|export)\s*(?:[|>].*)?$|\$\{!|\.git/config|\bset\s+-[a-z]*x"
+        r"|GITHUB_ENV|GITHUB_PATH|BASH_ENV|LD_PRELOAD|PROMPT_COMMAND|ACTIONS_(?:RUNTIME|CACHE|ID_TOKEN)")),
     ("desvía la red", re.compile(
         r"(?i)\b(https?|all|no)_proxy\b|CURL_CA_BUNDLE|REQUESTS_CA_BUNDLE|SSL_CERT_(FILE|DIR)|NODE_EXTRA_CA_CERTS")),
 ]
-# Además, en lo que no es un workflow (scripts, pruebas, Workers): corre dentro de pasos con secretos.
+# Un paquete o un binario nuevo es código que ninguna compuerta lee. Lo único que se admite instalar es
+# un archivo de requisitos que ya está en un repo.
+_REQUISITOS = re.compile(r"\s*(?:- )?(?:run: )?(?:python3? -m )?pip3? install(?: -q| --quiet)? -r [A-Za-z0-9_$/.\"-]+\s*")
 _PROHIBIDO_EN_CODIGO = [
     ("un intérprete en línea", re.compile(
         r"\b(python3?|node|perl|ruby|php|deno|bun|bash|sh|zsh)\s+-(c|e)\b|\b(perl|ruby|php)\b")),
     ("instala o eleva", re.compile(
         r"\b(pip3?|npm|pnpm|yarn|apt|apt-get|brew|gem|cargo|go)\s+(install|i|add|exec|get)\b|\bnpx\b|\bsudo\b"
-        r"|\bdocker\b|\bchmod\b|\bchown\b")),
+        r"|\bdocker\b|\bchmod\b|\bchown\b|\bgdb\b|\bstrace\b")),
     ("git o gh hacia fuera", re.compile(
         r"\bgit\s+(push|remote|config|clone|fetch|pull)\b"
         r"|\bgh\s+(api|gist|secret|auth|repo|release|issue|pr|variable|ssh-key|gpg-key|extension|codespace|cache|search|browse)\b")),
@@ -706,13 +711,11 @@ def _lineas(r: Resultado, cambios: list[Cambio]) -> None:
     for c in cambios:
         if c.despues is None:
             continue
-        es_workflow = c.ruta.startswith(".github/")
-        reglas = _PROHIBIDO if es_workflow else _PROHIBIDO + _PROHIBIDO_EN_CODIGO
         conocidos = hosts(c.antes or "")
         for linea in c.anadidas:
-            for nombre, patron in reglas:
+            for nombre, patron in _PROHIBIDO + _PROHIBIDO_EN_CODIGO:
                 m = patron.search(linea)
-                if m:
+                if m and not (nombre == "instala o eleva" and _REQUISITOS.fullmatch(linea)):
                     r.falla("lineas", f"{c.ruta}: una línea nueva {nombre} (`{m.group(0).strip()}`): `{linea.strip()[:100]}`")
             for h in sorted(hosts(linea) - conocidos):
                 r.falla("lineas", f"{c.ruta}: host o URL nuevo `{h[:80]}`")

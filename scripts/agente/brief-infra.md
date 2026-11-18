@@ -97,10 +97,10 @@ los secretos de la organización. Se descarta entero si:
 - alguna línea nueva trae `curl`, `wget`, `nc`, `ssh`, un host o URL que no
   estaba en ese archivo, `base64`, `eval`, algo que desactive TLS, `|| true`,
   `continue-on-error`, `set +e`, `exit 0`, el nombre de un secreto o de un
-  token, `env`/`printenv`, `GITHUB_ENV`, o un `timeout-minutes` mayor a 355; y
-  en un script o una prueba, además, un intérprete en línea (`python -c`,
-  `bash -c`), instalar paquetes, `git push`/`git config`/`gh api` o módulos de
-  red;
+  token, `env`/`printenv`, `set -x`, `GITHUB_ENV`, un intérprete en línea
+  (`python -c`, `bash -c`), instalar algo (salvo `pip install -r <archivo>`),
+  `sudo`, `git push`/`git config`/`gh api`, módulos de red (`urllib`,
+  `requests`, `fetch(`), o un `timeout-minutes` mayor a 355;
 - `actionlint`, el lint de rutas o `shellcheck` dan un hallazgo que no estaba,
   o `pytest` no pasa;
 - otro agente, que no ve tu razonamiento, no confirma que el parche arregla
