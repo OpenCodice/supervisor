@@ -286,6 +286,147 @@ def test_una_reversion_que_no_es_limpia_queda_agotada(cadenas, foto_sana, mundo)
     assert len(reparaciones(mundo)) == 2
 
 
+# --------------------------------------------------------------------------
+# Revivir una huella que agotó al agente
+# --------------------------------------------------------------------------
+
+def hasta_agotarse(cadenas, foto_sana, mundo, versiones: dict | None = None):
+    """Dos intentos descartados: la huella queda `agotada` con su issue (el #1)."""
+    wf, base, h = hasta_el_agente(cadenas, foto_sana, mundo)
+
+    def foto(v=versiones, extra=()):
+        return foto_sana(*base, *extra) | ({"versiones": v} if v else {})
+
+    anotar(mundo, "intento-iniciado", h, minutos(5))
+    anotar(mundo, "descartado", h, minutos(40), motivo="no pasó las compuertas: [poder] cambia `permissions`")
+    mundo.vuelta(foto(), minutos(45))
+    mundo.vuelta(foto(), minutos(60))
+    anotar(mundo, "intento-iniciado", h, minutos(65))
+    anotar(mundo, "descartado", h, minutos(90), motivo="el juez no lo aprueba")
+    mundo.vuelta(foto(), minutos(95))
+    r = mundo.vuelta(foto(), minutos(140))
+    assert huella_de(r, mundo).accion == "agotada" and r["estado"].huellas[h]["estado"] == "agotada"
+    assert len(reparaciones(mundo)) == 2
+    return foto, h
+
+
+def comentarios(mundo) -> list[str]:
+    """Los avisos de que la huella revivió, en su issue."""
+    return [c["body"] for m, r, c in mundo.cliente.llamadas
+            if r.endswith("/issues/1/comments") and "Vuelve al agente" in c["body"]]
+
+
+def test_una_huella_agotada_revive_con_el_tiempo_y_vuelve_al_agente(cadenas, foto_sana, mundo):
+    foto, h = hasta_agotarse(cadenas, foto_sana, mundo)
+    dias = lambda n, m=140: minutos(m + n * 24 * 60)  # noqa: E731
+    assert huella_de(mundo.vuelta(foto(), dias(6)), mundo).accion == "nada" and len(comentarios(mundo)) == 0
+    r = mundo.vuelta(foto(), dias(7))
+    d = huella_de(r, mundo)
+    assert d.accion == "revivir" and "pasaron 7 días" in d.motivo
+    reg = r["estado"].huellas[h]
+    assert (reg["estado"], reg["revividas"], reg["sesiones"], reg["issue"]) == ("abierta", 1, 0, 1)
+    assert "agotamiento" not in reg and reg["revivida"] == iso(dias(7))
+    # Constancia: una línea en la bitácora y un comentario en el issue que ya tenía; ninguno nuevo.
+    [linea] = [a for a in r["estado"].acciones if a["accion"] == "revivir"]
+    assert linea["huella"] == h and linea["resultado"] == "ok" and linea["detalle"]["veces"] == 1
+    [comentario] = comentarios(mundo)
+    assert "Vuelve al agente" in comentario and "pasaron 7 días" in comentario and mundo.cliente.issues == 1
+    # Con la cuenta en cero, la siguiente vuelta que puede lanza otra sesión; la misma foto no repite el aviso.
+    assert huella_de(mundo.vuelta(foto(), dias(7, 155)), mundo).accion == "esperar"
+    r = mundo.vuelta(foto(), dias(7, 200))
+    assert huella_de(r, mundo).accion == "agente" and len(reparaciones(mundo)) == 3
+    assert r["estado"].huellas[h]["intentos_agente"] == 0 and len(comentarios(mundo)) == 1
+    # Dos intentos más y se agota otra vez, con otra marca: el plazo corre de nuevo.
+    for inicio in (205, 260):
+        anotar(mundo, "intento-iniciado", h, dias(7, inicio))
+        anotar(mundo, "descartado", h, dias(7, inicio + 20), motivo="el juez no lo aprueba")
+        mundo.vuelta(foto(), dias(7, inicio + 25))
+        mundo.vuelta(foto(), dias(7, inicio + 50))
+    r = mundo.vuelta(foto(), dias(7, 400))
+    assert r["estado"].huellas[h]["estado"] == "agotada" and len(reparaciones(mundo)) == 4
+    assert r["estado"].huellas[h]["agotamiento"]["cuando"] > iso(dias(7))
+    assert huella_de(mundo.vuelta(foto(), dias(13)), mundo).accion == "nada"
+
+
+def test_revive_cuando_cambia_el_workflow_o_las_compuertas(cadenas, foto_sana, mundo):
+    foto, h = hasta_agotarse(cadenas, foto_sana, mundo, {"supervisor": "s1", "huellas": {}})
+    # Agotada sin haber visto todavía sus archivos: la primera vuelta que los ve los deja de referencia.
+    visto = {"supervisor": "s1", "huellas": {h: "a1"}}
+    r = mundo.vuelta(foto(visto), minutos(155))
+    assert huella_de(r, mundo).accion == "nada"
+    assert r["estado"].huellas[h]["agotamiento"] == {"cuando": iso(minutos(140)), "supervisor": "s1", "archivos": "a1"}
+    assert huella_de(mundo.vuelta(foto(visto), minutos(170)), mundo).accion == "nada"
+    # Una vuelta que no alcanzó a ver los archivos no es un cambio.
+    assert huella_de(mundo.vuelta(foto({"supervisor": "s1", "huellas": {}}), minutos(185)), mundo).accion == "nada"
+    d = huella_de(mundo.vuelta(foto({"supervisor": "s1", "huellas": {h: "a2"}}), minutos(200)), mundo)
+    assert d.accion == "revivir" and f"cambió `{VLE}`" in d.motivo and FE in d.motivo
+    assert len(comentarios(mundo)) == 1
+
+
+def test_revive_cuando_cambia_el_codigo_de_las_compuertas(cadenas, foto_sana, mundo):
+    foto, h = hasta_agotarse(cadenas, foto_sana, mundo, {"supervisor": "s1", "huellas": {}})
+    d = huella_de(mundo.vuelta(foto({"supervisor": "s2", "huellas": {}}), minutos(155)), mundo)
+    assert d.accion == "revivir" and "compuertas o el encargo" in d.motivo
+
+
+def test_revivir_tiene_tope_por_huella(cadenas, foto_sana, mundo):
+    from supervisor.estado import Estado
+    foto, h = hasta_agotarse(cadenas, foto_sana, mundo)
+    estado = Estado(mundo.carpeta)
+    estado.anotar_huella(estado.huellas[h] | {"revividas": 3})
+    estado.guardar()
+    for dias in (8, 20):
+        assert huella_de(mundo.vuelta(foto(), minutos(140 + dias * 24 * 60)), mundo).accion == "nada"
+    assert not comentarios(mundo)
+
+
+def test_en_modo_informe_revivir_no_cambia_nada(cadenas, foto_sana, mundo):
+    foto, h = hasta_agotarse(cadenas, foto_sana, mundo)
+    r = mundo.vuelta(foto(), minutos(140 + 8 * 24 * 60), modo="informe")
+    assert huella_de(r, mundo).accion == "revivir" and r["estado"].huellas[h]["estado"] == "agotada"
+    assert not comentarios(mundo) and not [a for a in r["estado"].acciones if a["accion"] == "revivir"]
+
+
+def test_revive_aunque_no_se_pueda_comentar_el_issue(cadenas, foto_sana, mundo):
+    foto, h = hasta_agotarse(cadenas, foto_sana, mundo)
+    mundo.cliente.falla_en = "/issues/1/comments"
+    r = mundo.vuelta(foto(), minutos(140 + 8 * 24 * 60))
+    [linea] = [a for a in r["estado"].acciones if a["accion"] == "revivir"]
+    assert linea["resultado"] == "ok" and "HTTP 422" in linea["detalle"]["comentario"]
+    assert r["estado"].huellas[h]["estado"] == "abierta" and r["estado"].huellas[h]["revividas"] == 1
+
+
+def test_si_la_falla_dejo_de_ocurrir_no_revive_se_resuelve(cadenas, foto_sana, mundo):
+    foto, h = hasta_agotarse(cadenas, foto_sana, mundo)
+    wf = cadenas.workflow(FE, VLE)
+    buena = (FE, corrida(VLE, "success", hace_h=-3, titulo=titulo(wf), jobs=[job("planear"), job("estado pendiente=[false]")]))
+    r = mundo.vuelta(foto(extra=(buena,)), minutos(140 + 8 * 24 * 60))
+    assert not mundo.de(r, "I2") and r["estado"].huellas[h]["estado"] == "resuelta"
+    assert not [a for a in r["estado"].acciones if a["accion"] == "revivir"]
+
+
+def test_la_que_el_agente_devolvio_revive_y_la_que_no_se_pudo_revertir_no(cadenas, foto_sana, mundo):
+    wf, base, h = hasta_el_agente(cadenas, foto_sana, mundo)
+    anotar(mundo, "intento-iniciado", h, minutos(5))
+    anotar(mundo, "descartado", h, minutos(40), motivo="el agente dice que no es infraestructura", definitivo=True)
+    r = mundo.vuelta(foto_sana(*base), minutos(45))
+    assert huella_de(r, mundo).accion == "agotada" and r["estado"].huellas[h]["agotamiento"]["cuando"] == iso(minutos(45))
+    assert huella_de(mundo.vuelta(foto_sana(*base), minutos(45 + 6 * 24 * 60)), mundo).accion == "nada"
+    r = mundo.vuelta(foto_sana(*base), minutos(45 + 7 * 24 * 60))
+    assert huella_de(r, mundo).accion == "revivir" and "bloqueo" not in r["estado"].huellas[h]
+
+
+def test_un_arreglo_que_no_se_pudo_revertir_no_revive(cadenas, foto_sana, mundo):
+    wf, base, h = con_arreglo(cadenas, foto_sana, mundo)
+    igual = prueba(wf, "failure", [job("planear"), job("reparar", "failure", PASO, list(LOG))])
+    mundo.vuelta(foto_sana(*base, igual), minutos(60))
+    anotar(mundo, "reversion-fallida", h, minutos(70), repo=FE, commit=COMMIT, motivo="main cambió las mismas líneas")
+    r = mundo.vuelta(foto_sana(*base, igual), minutos(75))
+    assert r["estado"].huellas[h]["estado"] == "agotada" and "agotamiento" not in r["estado"].huellas[h]
+    r = mundo.vuelta(foto_sana(*base, igual), minutos(75 + 9 * 24 * 60))
+    assert not [d for d in r["decisiones"] if d.accion == "revivir"] and r["estado"].huellas[h]["estado"] == "agotada"
+
+
 def test_un_arreglo_publicado_a_mano_tambien_se_vigila(cadenas, foto_sana, mundo):
     """reparar-infra lanzado a mano: la huella ya se había dado por resuelta y aun así se vigila el commit."""
     wf = cadenas.workflow(FE, VLE)

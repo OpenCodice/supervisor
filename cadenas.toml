@@ -61,6 +61,12 @@ sesiones_agente_por_dia = 3
 # Los intentos del agente más viejos que esto ya no cuentan: una huella agotada
 # vuelve a tener agente si sigue apareciendo.
 intentos_agente_caducan_dias = 28
+# Una huella que agotó al agente y sigue apareciendo vuelve a él, con los
+# intentos en cero, cuando cambia en main el workflow de la huella o un script
+# de infraestructura de su repo, cuando cambian las compuertas o el encargo del
+# agente, o pasados estos días. A lo más `revividas_por_huella` veces.
+revivir_dias = 7
+revividas_por_huella = 3
 en_cola_max_min = 120
 pr_abierto_max_min = 90
 web_margen_min = 15

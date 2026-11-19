@@ -37,6 +37,8 @@ def describir(d: Decision) -> str:
         return f"lanzar {destino}: revertir el arreglo que no pasó su prueba"
     if d.accion == "agotada":
         return "dejar constancia en un issue"
+    if d.accion == "revivir":
+        return "volver a darle la huella al agente de infraestructura y decirlo en su issue"
     return d.accion
 
 
@@ -108,6 +110,21 @@ class Actor:
         return self.cliente.post(f"repos/{self.repo_propio}/issues",
                                  {"title": titulo, "body": cuerpo, "labels": [ETIQUETA]})["number"]
 
+    def _revivir(self, d: Decision) -> dict:
+        """El aviso va en el issue que la huella ya tiene: revivir no abre otro."""
+        det = d.detalle
+        if not det.get("issue"):
+            return {}
+        try:
+            self.cliente.post(f"repos/{self.repo_propio}/issues/{det['issue']}/comments", {"body": (
+                f"**Vuelve al agente de infraestructura** ({det['veces']} de {det['tope']}): {det['por']}. "
+                f"Había quedado agotada ({det['agotada_por']}) y la falla sigue apareciendo; sus intentos se "
+                f"cuentan otra vez desde cero.\n\nConstancia pública del supervisor; no es una asignación.")})
+        except ErrorApi as e:
+            # Sin el comentario la huella revive igual: la constancia queda en la bitácora.
+            return {"comentario": str(e)}
+        return {}
+
     def cerrar_constancia(self, numero: int, motivo: str) -> None:
         self.cliente.post(f"repos/{self.repo_propio}/issues/{numero}/comments", {"body": motivo})
         self.cliente.patch(f"repos/{self.repo_propio}/issues/{numero}", {"state": "closed"})
@@ -139,6 +156,8 @@ class Actor:
             elif d.accion == "agotada":
                 det["issue"] = self._constancia(d)
                 d.efecto = d.efecto | {"issue": det["issue"]}
+            elif d.accion == "revivir":
+                det |= self._revivir(d)
             elif d.accion in ("agente", "revertir"):
                 # El issue es la constancia pública; reparar-infra comenta ahí su resultado.
                 det["issue"] = self._constancia(d)

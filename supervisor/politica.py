@@ -4,7 +4,7 @@ Módulo puro. Decide; no ejecuta. Cada decisión trae el registro de su huella
 (lo observado) y un `efecto` que solo se aplica si la acción se ejecutó.
 
 Acciones: nada, esperar, lanzar, revisar-pr, cerrar-pr, cancelar-y-relanzar,
-desplegar-web, agotada, agente, revertir.
+desplegar-web, agotada, agente, revertir, revivir.
 
 Todo lo que termina en un dispatch pasa por `_lanzar`: lo que toca por horario
 (I1), lo que pidió una corrida (I12), la tanda pendiente (I6), los reintentos
@@ -17,6 +17,8 @@ Una huella determinista pasa por: abierta → en-reparacion (se lanzó
 reparar-infra) → arreglo-publicado (se vigila su corrida de prueba) → resuelta,
 o → revertido (y, si le quedan intentos, otra vez al agente). Lo que hace
 reparar-infra llega por su bitácora en acciones.jsonl (EVENTOS), no por la foto.
+Una huella que agotó al agente y sigue apareciendo vuelve a él (`revivir`)
+cuando cambia algo que hace plausible otro resultado, o con el tiempo.
 """
 
 from __future__ import annotations
@@ -31,7 +33,7 @@ from .cadenas import Cadenas, Workflow
 from .invariantes import Hallazgo, instante, iso
 
 LANZAN = inv.LANZAN
-EJECUTABLES = LANZAN | {"cerrar-pr", "agotada"}
+EJECUTABLES = LANZAN | {"cerrar-pr", "agotada", "revivir"}
 # Lo que reparar-infra anota en acciones.jsonl y cambia el estado de una huella.
 EVENTOS = {"arreglo-publicado", "descartado", "revertido", "reversion-fallida"}
 EN_REPARACION = {"en-reparacion", "arreglo-publicado"}
@@ -139,7 +141,8 @@ def _registro(h: Hallazgo, ident: str, clase: str | None, previo: dict | None, a
 
 
 # Lo que la reparación guarda en el registro de la huella, pase lo que pase con su corrida base.
-_DE_LA_REPARACION = ("reparacion", "arreglo", "reversion", "intentos_extra", "sesiones", "bloqueo")
+_DE_LA_REPARACION = ("reparacion", "arreglo", "reversion", "intentos_extra", "sesiones", "bloqueo",
+                     "agotamiento", "revivida", "revividas")
 
 
 # --------------------------------------------------------------------------
@@ -260,9 +263,59 @@ def intentos_de(acciones: list, reg: dict, cadenas: Cadenas, ahora: datetime) ->
     """Intentos del agente gastados en una huella: cada sesión que empezó, y uno más por cada
     arreglo revertido por romper algo anterior."""
     desde = ahora - timedelta(days=cadenas.politica.get("intentos_agente_caducan_dias", 28))
+    if reg.get("revivida"):
+        # Al revivir la cuenta empieza de nuevo: los intentos anteriores ya no gastan.
+        desde = max(desde, instante(reg["revivida"]))
     iniciados = sum(1 for a in acciones if a.get("accion") == "intento-iniciado"
                     and a.get("huella") == reg["huella"] and instante(a["cuando"]) >= desde)
     return iniciados + reg.get("intentos_extra", 0)
+
+
+def _versiones(v: _Vuelta, ident: str) -> dict:
+    """Lo que la foto sabe hoy de lo que podría cambiar el resultado del agente para esta huella."""
+    vistas = v.foto.get("versiones") or {}
+    actual = {"supervisor": vistas.get("supervisor"), "archivos": (vistas.get("huellas") or {}).get(ident)}
+    return {k: x for k, x in actual.items() if x}
+
+
+def _revivir_por(v: _Vuelta, reg: dict, marca: dict) -> str | None:
+    """Por qué una huella que agotó al agente merece otra ronda; None si todavía no."""
+    pol = v.cadenas.politica
+    if reg.get("revividas", 0) >= pol.get("revividas_por_huella", 3):
+        return None
+    actual = _versiones(v, reg["huella"])
+    # Solo se compara lo que se vio las dos veces: lo que no se pudo observar no es un cambio.
+    if marca.get("supervisor") and actual.get("supervisor") and marca["supervisor"] != actual["supervisor"]:
+        return "cambiaron las compuertas o el encargo del agente de infraestructura"
+    if marca.get("archivos") and actual.get("archivos") and marca["archivos"] != actual["archivos"]:
+        return f"cambió `{reg.get('workflow')}` o un script de infraestructura en main de {reg.get('repo')}"
+    dias = pol.get("revivir_dias", 7)
+    if v.ahora - instante(marca["cuando"]) >= timedelta(days=dias):
+        return f"pasaron {dias:g} días desde que se agotó"
+    return None
+
+
+def _agotar_agente(v: _Vuelta, d: Decision, motivo: str) -> Decision:
+    """La huella agotó al agente: constancia, y la marca de con qué versiones se agotó. Si ya la
+    tenía y algo cambió desde entonces (o pasó el tiempo), vuelve al agente con la cuenta en cero."""
+    reg = d.registro
+    marca = reg.get("agotamiento")
+    if not marca:
+        reg["agotamiento"] = {"cuando": iso(v.ahora)} | _versiones(v, reg["huella"])
+        return _agotar(d, motivo)
+    por = _revivir_por(v, reg, marca)
+    if por is None:
+        # La primera vuelta que alcanza a ver una versión la deja como punto de comparación.
+        reg["agotamiento"] = _versiones(v, reg["huella"]) | marca
+        return _agotar(d, motivo)
+    veces = reg.get("revividas", 0) + 1
+    d.accion, d.motivo = "revivir", f"vuelve al agente de infraestructura: {por}"
+    d.detalle = {"issue": reg.get("issue"), "por": por, "agotada_por": motivo, "veces": veces,
+                 "tope": v.cadenas.politica.get("revividas_por_huella", 3)}
+    d.efecto = {"estado": "abierta", "motivo": d.motivo, "bloqueo": None, "agotamiento": None,
+                "revivida": iso(v.ahora), "revividas": veces, "sesiones": 0, "intentos_extra": 0, "errores": 0,
+                "ultima_accion": iso(v.ahora)}
+    return d
 
 
 def _reparaciones_vivas(v: _Vuelta) -> list:
@@ -301,14 +354,15 @@ def _agente(v: _Vuelta, d: Decision, motivo: str) -> Decision:
     if fuera:
         return _agotar(d, fuera)
     if reg.get("bloqueo"):
-        # Mientras la huella siga apareciendo: otra corrida fallida no le da otra sesión.
-        return _agotar(d, reg["bloqueo"])
+        # Mientras la huella siga apareciendo: otra corrida fallida no le da otra sesión. Un arreglo
+        # que no se pudo revertir sigue en main y no lleva marca: esa huella no revive.
+        return _agotar_agente(v, d, reg["bloqueo"]) if reg.get("agotamiento") else _agotar(d, reg["bloqueo"])
     reg["intentos_agente"] = intentos_de(v.acciones, reg, v.cadenas, v.ahora)
     if reg["intentos_agente"] >= pol.get("intentos_agente_por_huella", 2):
-        return _agotar(d, "se agotaron los intentos del agente")
+        return _agotar_agente(v, d, "se agotaron los intentos del agente")
     tope = pol.get("max_lanzamientos_por_corrida", 3)
     if reg.get("sesiones", 0) - reg["intentos_agente"] >= tope:
-        return _agotar(d, f"reparar-infra se lanzó {tope} veces sin llegar a empezar su intento")
+        return _agotar_agente(v, d, f"reparar-infra se lanzó {tope} veces sin llegar a empezar su intento")
     if reg["errores"] >= tope:
         return _agotar(d, "no se pudo lanzar reparar-infra")
     if reg["ultima_accion"] and v.ahora - instante(reg["ultima_accion"]) < _gracia(v):
@@ -328,7 +382,9 @@ def _agente(v: _Vuelta, d: Decision, motivo: str) -> Decision:
         d.accion, d.motivo = "esperar", "tope diario de sesiones de agente"
         return d
     _lanzar_reparacion(v, d, "agente", {"huella": reg["huella"]}, motivo, {
-        "estado": "en-reparacion", "motivo": motivo, "reparacion": {"lanzada": iso(v.ahora)}, "+sesiones": 1}, sola=True)
+        "estado": "en-reparacion", "motivo": motivo, "reparacion": {"lanzada": iso(v.ahora)}, "+sesiones": 1,
+        # Con otra sesión en marcha, la marca de cuándo se agotó ya no describe a la huella.
+        "agotamiento": None}, sola=True)
     if d.accion == "agente":
         v.agentes += 1
     return d
@@ -369,6 +425,7 @@ def _asimilar(v: _Vuelta, d: Decision) -> bool:
         d.motivo = reg["motivo"]
         if det.get("definitivo"):
             reg["bloqueo"] = f"el agente la devolvió: {det.get('motivo')}"
+            reg["agotamiento"] = {"cuando": iso(v.ahora)} | _versiones(v, reg["huella"])
             _agotar(d, reg["bloqueo"])
     elif ev["accion"] == "revertido":
         doble = bool((reg.get("reversion") or {}).get("doble"))

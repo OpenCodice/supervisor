@@ -386,3 +386,67 @@ def test_un_token_vencido_no_se_confunde_con_uno_que_no_vence(cadenas):
     leido = foto["credenciales"]["github"]
     assert leido["observado"] is False and leido["vence"] is None and {r["estado"] for r in leido["rechazos"]} == {401}
     assert inv.token_rechazado(foto) and "I13" in inv.sin_observar(foto, cadenas)
+
+
+# ---- Versiones: lo que hace plausible revivir una huella agotada ----
+
+def test_las_versiones_se_leen_solo_para_las_huellas_agotadas(cadenas):
+    from supervisor.observar import _versiones, version_de_reparacion
+    fe = "/repos/OpenCodice/fiscal-extractor/contents/"
+    archivos = {"wf": "1" * 40, "sh": "2" * 40}
+
+    def red():
+        return Red([
+            (fe + ".github/workflows?", lambda url: (200, {}, [
+                {"path": ".github/workflows/vigilar-federal.yml", "sha": archivos["wf"]},
+                {"path": ".github/workflows/impacto.yml", "sha": "9" * 40}])),
+            (fe + "scripts/agente?", lambda url: (200, {}, [
+                {"path": "scripts/agente/infra.sh", "sha": archivos["sh"]},
+                {"path": "scripts/agente/brief.md", "sha": "8" * 40}])),
+            (fe + "scripts?", (200, {}, [{"path": "scripts/trailers.py", "sha": "7" * 40},
+                                        {"path": "scripts/agente", "sha": "6" * 40}])),
+        ])
+
+    agotada = {"huella": "h1", "repo": "fiscal-extractor", "workflow": "vigilar-federal.yml", "estado": "agotada",
+               "agotamiento": {"cuando": t(1)}}
+    huellas = {"h1": agotada, "h2": agotada | {"huella": "h2"},
+               "h3": agotada | {"huella": "h3", "agotamiento": None},
+               "h4": agotada | {"huella": "h4", "repo": "constitucion-web"}}
+    foto = {"errores": []}
+    api = red()
+    v = _versiones(Cliente("t", transporte=api), cadenas, foto, huellas)
+    assert v["supervisor"] == version_de_reparacion(cadenas) and set(v["huellas"]) == {"h1", "h2"}
+    # Una lectura por carpeta, no por huella; sin huellas agotadas, ninguna.
+    assert len(api.pedidos) == 3 and all("ref=main" in url for _, url, _, _ in api.pedidos)
+    api = red()
+    assert _versiones(Cliente("t", transporte=api), cadenas, foto, {"h3": huellas["h3"]})["huellas"] == {} and not api.pedidos
+
+    antes = v["huellas"]["h1"]
+    # Otro workflow u otro archivo que el agente no puede tocar no cambian la versión; el suyo o un script, sí.
+    for clave in ("wf", "sh"):
+        archivos[clave] = "a" * 40
+        despues = _versiones(Cliente("t", transporte=red()), cadenas, foto, huellas)["huellas"]["h1"]
+        assert despues != antes
+        antes = despues
+    # Lo que no se pudo leer no se compara.
+    rota = Red([(fe + ".github/workflows?", (500, {}, b"")), (fe, (200, {}, []))])
+    assert _versiones(Cliente("t", transporte=rota), cadenas, foto, huellas)["huellas"] == {} and foto["errores"]
+
+
+def test_la_version_del_supervisor_cambia_con_las_compuertas_y_con_el_encargo(cadenas, tmp_path):
+    import dataclasses
+    from supervisor.observar import version_de_reparacion
+    (tmp_path / "supervisor").mkdir()
+    (tmp_path / "scripts" / "agente").mkdir(parents=True)
+    (tmp_path / "supervisor" / "compuertas.py").write_text("a = 1\n")
+    (tmp_path / "scripts" / "agente" / "brief-infra.md").write_text("encargo\n")
+    base = version_de_reparacion(cadenas, tmp_path)
+    assert base == version_de_reparacion(cadenas, tmp_path)
+    (tmp_path / "supervisor" / "politica.py").write_text("otra cosa\n")
+    assert version_de_reparacion(cadenas, tmp_path) == base
+    (tmp_path / "scripts" / "agente" / "brief-infra.md").write_text("otro encargo\n")
+    con_encargo = version_de_reparacion(cadenas, tmp_path)
+    (tmp_path / "supervisor" / "compuertas.py").write_text("a = 2\n")
+    con_compuertas = version_de_reparacion(cadenas, tmp_path)
+    otras = dataclasses.replace(cadenas, reparacion=cadenas.reparacion | {"max_lineas": 121})
+    assert len({base, con_encargo, con_compuertas, version_de_reparacion(otras, tmp_path)}) == 4

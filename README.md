@@ -105,7 +105,9 @@ entra:
 
 El agente solo puede tocar workflows y scripts de orquestación de los tres extractores, nunca el
 extractor, las compuertas de fidelidad, los repos de datos ni este repo. Dos intentos por huella y tres
-sesiones al día; lo que no se pueda arreglar así queda `agotada` con su motivo en un issue. Para
+sesiones al día; lo que no se pueda arreglar así queda `agotada` con su motivo en un issue, y vuelve al
+agente sola si la falla sigue y cambia el workflow, sus scripts o las compuertas, o a los siete días
+(hasta tres veces). Para
 ensayarlo sin publicar nada: `gh workflow run reparar-infra.yml -f ensayo=true -f huella=<huella>`. El
 detalle (alcance, cada compuerta, cómo se aísla el agente) está en `AGENTS.md`.
 

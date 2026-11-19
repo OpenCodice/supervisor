@@ -6,6 +6,7 @@ y el mismo `ahora`, la evaluación es la misma.
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import os
@@ -21,6 +22,7 @@ from pathlib import Path
 from . import huella as _huella
 from . import invariantes as inv
 from .cadenas import Cadenas
+from .rutas import casa
 
 API = "https://api.github.com"
 _CAMPOS_CORRIDA = ("id", "name", "path", "status", "conclusion", "display_title", "created_at",
@@ -395,6 +397,76 @@ def salud_de(cliente: Cliente, worker: dict, entorno) -> dict:
 
 
 # --------------------------------------------------------------------------
+# Versiones: lo que, si cambia, hace plausible que el agente llegue a otro resultado
+# --------------------------------------------------------------------------
+
+# Lo que decide si un arreglo entra y lo que se le encarga al agente.
+_DE_LA_REPARACION = ("supervisor/compuertas.py", "supervisor/reparar.py", "supervisor/lint_workflows.py")
+
+
+def version_de_reparacion(cadenas: Cadenas, raiz: Path | None = None) -> str:
+    """Huella del código de compuertas, de los encargos del agente y de `[reparacion]`, tal como
+    están en el árbol desde el que corre esta vuelta."""
+    from .cadenas import RAIZ
+    raiz = raiz or RAIZ
+    resumen = hashlib.sha256(json.dumps(cadenas.reparacion, sort_keys=True, ensure_ascii=False).encode("utf-8"))
+    archivos = [raiz / r for r in _DE_LA_REPARACION] + sorted((raiz / "scripts" / "agente").glob("*"))
+    for archivo in archivos:
+        if archivo.is_file():
+            resumen.update(archivo.relative_to(raiz).as_posix().encode("utf-8") + b"\0" + archivo.read_bytes() + b"\0")
+    return resumen.hexdigest()[:16]
+
+
+def _carpeta_fija(glob: str) -> str:
+    """La carpeta que contiene todo lo que un glob puede casar: lo anterior a su primer comodín."""
+    fija = re.split(r"[*?]", glob, maxsplit=1)[0]
+    return fija.rpartition("/")[0]
+
+
+def _versiones(cliente: Cliente, cadenas: Cadenas, foto: dict, huellas: dict) -> dict:
+    """La versión del lado del supervisor y, por cada huella que agotó al agente, la de su workflow
+    y de los archivos de infraestructura que el agente puede tocar en su repo, como están en main.
+
+    Una lectura por carpeta y repo (la lista trae el sha de cada archivo y de cada subcarpeta), y
+    solo mientras haya huellas agotadas.
+    """
+    versiones = {"supervisor": version_de_reparacion(cadenas), "huellas": {}}
+    listas: dict[tuple, list | None] = {}
+
+    def lista(repo: str, carpeta: str) -> list | None:
+        if (repo, carpeta) not in listas:
+            try:
+                leido = cliente.get(f"repos/{cadenas.org}/{repo}/contents/{carpeta}", ref="main")
+                listas[(repo, carpeta)] = [(e["path"], e["sha"]) for e in leido] if isinstance(leido, list) else None
+            except LimiteDeUso:
+                raise
+            except (ErrorApi, KeyError, TypeError) as e:
+                # Una carpeta que no existe no tiene nada que comparar; lo demás es no haber visto.
+                listas[(repo, carpeta)] = [] if getattr(e, "estado", None) == 404 else None
+                if listas[(repo, carpeta)] is None:
+                    foto["errores"].append(f"{repo}:{carpeta} (versión): {e}")
+        return listas[(repo, carpeta)]
+
+    for ident, reg in huellas.items():
+        alcance = cadenas.alcance(reg.get("repo"))
+        if not reg.get("agotamiento") or alcance is None or not _ARCHIVO_YML.match(str(reg.get("workflow") or "")):
+            continue
+        globs = [f".github/workflows/{reg['workflow']}"] + [g for g in alcance.get("permitidos", [])
+                                                           if not g.startswith(".github/")]
+        vistos, ciego = [], False
+        for glob in globs:
+            entradas = lista(reg["repo"], _carpeta_fija(glob))
+            if entradas is None:
+                ciego = True
+                break
+            vistos += [f"{ruta} {sha}" for ruta, sha in entradas if casa(ruta, glob)]
+        # Sin haberlo visto todo no hay comparación: la huella solo revive con el tiempo.
+        if not ciego:
+            versiones["huellas"][ident] = hashlib.sha256("\n".join(sorted(vistos)).encode("utf-8")).hexdigest()[:16]
+    return versiones
+
+
+# --------------------------------------------------------------------------
 # La foto
 # --------------------------------------------------------------------------
 
@@ -594,6 +666,8 @@ def tomar_foto(cliente: Cliente, cadenas: Cadenas, ahora: datetime, cache: str |
                 "cross": (p["head"].get("repo") or {}).get("full_name") != p["base"]["repo"]["full_name"],
             } for p in abiertos],
         }
+    if cadenas.reparacion:
+        foto["versiones"] = _versiones(cliente, cadenas, foto, huellas or {})
     foto["credenciales"] = {"github": _credencial_github(cliente, cadenas, foto, acciones or [], ahora, entorno)}
     foto["llamadas"] = cliente.llamadas
     return foto

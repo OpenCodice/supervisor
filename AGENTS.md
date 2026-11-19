@@ -207,9 +207,23 @@ es confiable. El diseño supone que al agente se le puede engañar y lo contiene
 huella determinista solo deja su constancia (`agotada`, con ese motivo); al encenderlo, la toma. Un
 ensayo a mano no depende de él.
 
-**Topes**: 2 intentos por huella (caducan a los 28 días), 3 sesiones al día, una sola `reparar-infra` a
-la vez. Una huella fuera del alcance (este repo, las webs, los repos de datos) queda `agotada` sin
+**Topes**: 2 intentos por huella (caducan a los 28 días, o empiezan de cero al revivir), 3 sesiones al
+día, una sola `reparar-infra` a la vez. Una huella fuera del alcance (este repo, las webs, los repos de datos) queda `agotada` sin
 gastar sesión. El supervisor no se repara a sí mismo.
+
+**Revivir** (`politica._agotar_agente`). Una huella que agotó al agente (sus intentos, tres sesiones
+que no llegaron a empezar, o el agente la devolvió) no queda así para siempre: mientras siga
+apareciendo, vuelve a él con los intentos en cero cuando cambia algo que hace plausible otro resultado
+o, si no, a los `revivir_dias` (7). Al agotarse guarda en `agotamiento` cuándo fue y dos versiones que
+trae la foto (`foto["versiones"]`, de `observar._versiones`): la del lado del supervisor (un resumen de
+`compuertas.py`, `reparar.py`, `lint_workflows.py`, `scripts/agente/` y `[reparacion]`, del árbol desde
+el que corre la vuelta) y la del repo afectado (los sha, en main, del workflow de la huella y de los
+archivos que el agente puede tocar ahí que no son workflows; una lectura por carpeta, y solo mientras
+haya huellas agotadas). Solo cuenta como cambio lo que se vio las dos veces. La acción `revivir` deja
+una línea en la bitácora y un comentario en el issue que la huella ya tiene (no abre otro); pone
+`revivida` (desde ahí cuenta `intentos_de`) y suma `revividas`, con tope `revividas_por_huella` (3). No
+revive una huella cuyo arreglo no se pudo revertir (sigue en main), ni una fuera del alcance. Los
+intentos siguen caducando a los 28 días, como antes.
 
 **Alcance** (`[reparacion]` de `cadenas.toml`): workflows salvo `revisar-pr.yml`, `scripts/lanzar_*.sh`
 (hoy no existe ninguno), `scripts/agente/*.sh` salvo `cerrar*.sh` y `publicar_registro.sh`, y los Workers `scheduler/` y
@@ -275,7 +289,7 @@ gh workflow run reparar-infra.yml -R OpenCodice/supervisor -f ensayo=true \
 ```
 
 **Estado**: una huella pasa por `abierta` → `en-reparacion` → `arreglo-publicado` → `resuelta`, o →
-`revertido` → otra sesión o `agotada`. `reparar-infra.yml` anota en `acciones.jsonl`
+`revertido` → otra sesión o `agotada` (→ `abierta` otra vez si revive). `reparar-infra.yml` anota en `acciones.jsonl`
 `intento-iniciado`, `arreglo-publicado` (repo, commit, archivos, prueba), `descartado` (motivo),
 `revertido` y `reversion-fallida`.
 
