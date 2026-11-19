@@ -251,7 +251,7 @@ jobs:
           pid=$(pgrep -u puerta -f proxy_mx.py | head -n 1)
           if [ -z "$pid" ] || sudo test -e "$INFRA/puerta/token"; then
             echo "::warning::La puerta hacia egress-mx no arrancó: el agente trabaja sin ella."
-            sudo pkill -u puerta > /dev/null 2>&1
+            sudo pkill -u puerta > /dev/null 2>&1 || :
             sudo rm -f "$INFRA/puerta/token"
             exit 0
           fi
@@ -303,7 +303,8 @@ jobs:
         # no puede traer nada que él no pudiera leer.
         if: ${{ always() }}
         run: |
-          sudo pkill -u puerta > /dev/null 2>&1
+          # Sin puerta no hay proceso que cerrar, y eso no es una falla.
+          sudo pkill -u puerta > /dev/null 2>&1 || :
           mkdir -p "$RUNNER_TEMP/entrega"
           bash "$INFRA/bin/infra.sh" como agente empacar || echo "::warning::No se pudo empacar la entrega."
           for f in entrega.tar borrados.txt veredicto.json; do
