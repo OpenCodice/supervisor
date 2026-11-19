@@ -222,9 +222,11 @@ def validar(c: Cadenas) -> None:
                     raise ValueError(f"cadenas.toml: [reparacion.propio] no declara `{clave}`")
             if propio["workflow"] == c.reparacion.get("workflow"):
                 raise ValueError("cadenas.toml: [reparacion.propio].workflow no puede ser el de la reparación")
-            if not {"reparacion", "credenciales"} <= set(propio["secciones_fijas"]):
+            # Los topes, a dónde va cada token y el cerco del agente no los cambia un arreglo.
+            faltan = {"general", "politica", "workers", "credenciales", "reparacion"} - set(propio["secciones_fijas"])
+            if faltan:
                 raise ValueError("cadenas.toml: [reparacion.propio].secciones_fijas tiene que incluir "
-                                 "`reparacion` y `credenciales`")
+                                 + ", ".join(f"`{f}`" for f in sorted(faltan)))
     # Lo que la política cuenta en la bitácora tiene que seguir ahí cuando lo cuenta.
     ventanas = {"[politica].intentos_agente_caducan_dias": c.politica.get("intentos_agente_caducan_dias", 28),
                 "[politica].rechazo_vigente_h": c.politica.get("rechazo_vigente_h", 192) / 24,

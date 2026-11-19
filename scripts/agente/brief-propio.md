@@ -82,8 +82,8 @@ puede lanzar y cancelar corridas en toda la organización. Se descarta entero si
 - toca algo fuera de lo permitido, borra un archivo, pasa del tamaño, o cambia
   o crea algo en `tests/` que no sea un `tests/test_<tema>.py` nuevo o un dato
   nuevo en `tests/fixtures/`;
-- en `cadenas.toml` cambia `[general]`, `[estado]`, `[invariantes]`,
-  `[reparacion]` o `[[credenciales]]`, o el archivo deja de cargar;
+- en `cadenas.toml` cambia cualquier tabla que no sea `[[workflows]]`, agrega
+  o quita una tabla, o el archivo deja de cargar;
 - en el workflow cambia `on:`, `permissions`, `concurrency`, `runs-on`, un
   `uses:`, el conjunto de jobs o de pasos, los secretos que nombra, `env`, o de
   un `run:` algo más que comillas, comentarios, `set -e…` o `mkdir -p` (hasta

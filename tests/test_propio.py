@@ -185,6 +185,9 @@ def test_el_workflow_del_supervisor_se_juzga_con_las_reglas_de_poder(juzgar):
     ("I2 = true ", "I2 = false", "invariantes"),
     ("conservar_dias = 30", "conservar_dias = 300", "estado"),
     ('org = "OpenCodice"', 'org = "Otra"', "general"),
+    ("en_cola_max_min = 120", "en_cola_max_min = 180", "politica"),
+    ('salud = "https://egress-mx.danielcardeenas.workers.dev/salud"', 'salud = "https://example.com/salud"', "workers"),
+    ('token_env = "EGRESS_MX_TOKEN"', 'token_env = "GITHUB_TOKEN"', "workers"),
 ])
 def test_las_secciones_fijas_de_cadenas_toml_no_cambian(juzgar, viejo, nuevo, seccion):
     r = juzgar({"cadenas.toml": con(CADENAS_TOML, viejo, nuevo)})
@@ -192,11 +195,16 @@ def test_las_secciones_fijas_de_cadenas_toml_no_cambian(juzgar, viejo, nuevo, se
 
 
 def test_cadenas_toml_puede_cambiar_fuera_de_lo_fijo_si_sigue_cargando(juzgar):
-    assert juzgar({"cadenas.toml": con(CADENAS_TOML, "en_cola_max_min = 120", "en_cola_max_min = 180")}).pasa
+    assert juzgar({"cadenas.toml": con(CADENAS_TOML, "max_min = 300", "max_min = 310")}).pasa
     r = juzgar({"cadenas.toml": con(CADENAS_TOML, 'horario = [{ dias = ["mie"], hora = "15:30" }]',
                                     'horario = [{ dias = ["miercoles"], hora = "15:30" }]')})
     assert any("no carga" in d for d in r.de("declarado")), r.fallas
     assert any("no se puede leer" in d for d in juzgar({"cadenas.toml": CADENAS_TOML + "[rota\n"}).de("declarado"))
+
+
+def test_cadenas_toml_no_gana_tablas(juzgar):
+    r = juzgar({"cadenas.toml": CADENAS_TOML + '\n[otra]\nclave = "valor"\n'})
+    assert any("agrega o quita la tabla `otra`" in d for d in r.de("declarado")), r.fallas
 
 
 def test_sin_declarar_el_modo_el_supervisor_no_se_repara(juzgar, cadenas):
@@ -206,7 +214,7 @@ def test_sin_declarar_el_modo_el_supervisor_no_se_repara(juzgar, cadenas):
 
 
 def test_cadenas_toml_exige_que_lo_que_juzga_quede_fuera(tmp_path):
-    sin_cerco = con(CADENAS_TOML, 'secciones_fijas = ["general", "estado", "invariantes", "reparacion", "credenciales"]',
+    sin_cerco = con(CADENAS_TOML, 'secciones_fijas = ["general", "estado", "invariantes", "politica", "firmas", "datos", "repos", "web", "workers", "credenciales", "reparacion"]',
                     'secciones_fijas = ["general"]')
     (tmp_path / "c.toml").write_text(sin_cerco, encoding="utf-8")
     with pytest.raises(ValueError, match="secciones_fijas"):

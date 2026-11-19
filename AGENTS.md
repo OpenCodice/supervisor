@@ -338,8 +338,9 @@ diferencias (todas porque, roto, el supervisor no puede vigilar nada ni leer o e
   tampoco se crea un `conftest.py` ni un `.py` que no sea `tests/test_<tema>.py`. Nada se borra. Mismo
   tope de archivos y líneas.
 - **`cadenas.toml`** (`compuertas._declarado`): leído como datos antes y después, `secciones_fijas`
-  (`general`, `estado`, `invariantes`, `reparacion`, `credenciales`) quedan idénticas, y el resultado
-  tiene que cargar con el validador de quien juzga. Apagar un invariante no es un arreglo.
+  (todas las tablas menos `workflows`) quedan idénticas, no se agrega ni se quita ninguna tabla, y el
+  resultado tiene que cargar con el validador de quien juzga. Apagar un invariante, subir un tope o
+  cambiar a dónde se manda un token no es un arreglo.
 - **`supervisor.yml`**: las mismas reglas de `poder` que cualquier workflow. Su único job tiene poder,
   así que en la práctica solo admite comillas, comentarios, `set -e…` y `mkdir -p`.
 - **Líneas** (`compuertas._lineas_propias`, además de la lista de siempre): una línea nueva de

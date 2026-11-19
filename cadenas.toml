@@ -620,7 +620,9 @@ prohibidos = [
 # permitidos, nuevos, prohibidos   como arriba. Ninguna prueba ni dato de
 #                   prueba que ya exista cambia; lo que juzga un arreglo (las
 #                   compuertas, este flujo, los encargos) no se toca.
-# secciones_fijas   tablas de este archivo que un arreglo no puede cambiar.
+# secciones_fijas   tablas de este archivo que un arreglo no puede cambiar: todas
+#                   menos `workflows`. Las demás deciden los topes, a dónde se
+#                   manda cada token y qué puede tocar el agente.
 [reparacion.propio]
 workflow = "supervisor.yml"
 max_por_dia = 2
@@ -639,7 +641,7 @@ prohibidos = [
   "scripts/**",
   "estado/**",
 ]
-secciones_fijas = ["general", "estado", "invariantes", "reparacion", "credenciales"]
+secciones_fijas = ["general", "estado", "invariantes", "politica", "firmas", "datos", "repos", "web", "workers", "credenciales", "reparacion"]
 
 [[reparacion.repos]]
 nombre = "constitucion-extractor"

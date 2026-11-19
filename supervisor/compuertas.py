@@ -263,6 +263,9 @@ def _declarado(r: Resultado, cambios: list[Cambio], cadenas: Cadenas, despues: P
         for seccion in conf.get("secciones_fijas", []):
             if a.get(seccion) != d.get(seccion):
                 r.falla("declarado", f"cadenas.toml: cambia `{seccion}`, que el arreglo no puede tocar")
+        # Una tabla nueva sería configuración que nadie declaró fija.
+        for seccion in sorted(set(a) ^ set(d)):
+            r.falla("declarado", f"cadenas.toml: agrega o quita la tabla `{seccion}`")
         try:
             _cadenas.cargar(despues / "cadenas.toml")
         except Exception as e:  # noqa: BLE001 — lo que el validador no acepta, por lo que sea, no pasa
