@@ -211,9 +211,20 @@ def validar(c: Cadenas) -> None:
             raise ValueError("cadenas.toml: [reparacion].scripts_con_poder es `lista` o `cerrado`")
         for r in c.reparacion.get("repos", []):
             if r["nombre"] == c.general["repo_supervisor"]:
-                raise ValueError("cadenas.toml: el supervisor no se repara a sí mismo")
+                raise ValueError("cadenas.toml: el supervisor no va en [[reparacion.repos]]: su cerco es [reparacion.propio]")
             if any(r["nombre"] == d["repo"] for d in c.datos):
                 raise ValueError(f"cadenas.toml: {r['nombre']} es un repo de datos: el agente no lo toca")
+        propio = c.reparacion.get("propio")
+        if propio is not None:
+            # Al supervisor se le repara con su propio cerco, no como a un repo más.
+            for clave in ("workflow", "permitidos", "nuevos", "prohibidos", "secciones_fijas"):
+                if not propio.get(clave):
+                    raise ValueError(f"cadenas.toml: [reparacion.propio] no declara `{clave}`")
+            if propio["workflow"] == c.reparacion.get("workflow"):
+                raise ValueError("cadenas.toml: [reparacion.propio].workflow no puede ser el de la reparación")
+            if not {"reparacion", "credenciales"} <= set(propio["secciones_fijas"]):
+                raise ValueError("cadenas.toml: [reparacion.propio].secciones_fijas tiene que incluir "
+                                 "`reparacion` y `credenciales`")
     # Lo que la política cuenta en la bitácora tiene que seguir ahí cuando lo cuenta.
     ventanas = {"[politica].intentos_agente_caducan_dias": c.politica.get("intentos_agente_caducan_dias", 28),
                 "[politica].rechazo_vigente_h": c.politica.get("rechazo_vigente_h", 192) / 24,

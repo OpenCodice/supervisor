@@ -25,13 +25,27 @@ run-name: "reparar-infra huella=[${{ inputs.huella }}] ensayo=[${{ inputs.ensayo
 #   revertir    (input `revertir`) `git revert` de un arreglo publicado que no
 #               pasó su corrida de prueba. Lo pide el reconciliador.
 #
+#   verificar   solo al reparar al propio supervisor: espera su siguiente
+#               corrida y, si falla o no termina, revierte el arreglo.
+#
 # Con `ensayo` hace todo y no publica ni anota nada: el parche y los veredictos
 # quedan como artefactos.
+#
+# Con `huella=supervisor` lo que se repara es el supervisor mismo. Lo lanza el
+# Worker scheduler cuando supervisor.yml lleva tres corridas fallidas, con
+# `repo=supervisor workflow=supervisor.yml corrida=<la última fallida>
+# origen=scheduler`. Roto, el reconciliador no puede vigilar nada ni leer su
+# estado, así que este modo no usa estado/: la falla sale de esa corrida, el
+# tope del día se cuenta por los títulos de estas corridas, la constancia va a
+# un issue y quien revierte es el job `verificar`. Su cerco es
+# `[reparacion.propio]`, y además de las compuertas el arreglo tiene que
+# sobrevivir una vuelta real en modo informe. Quien juzga es el código de main;
+# si ni siquiera se deja importar, el del commit de la última corrida buena.
 on:
   workflow_dispatch:
     inputs:
       huella:
-        description: 'Huella que se repara (estado/huellas.jsonl)'
+        description: 'Huella que se repara (estado/huellas.jsonl), o `supervisor` para reparar al propio supervisor'
         required: true
       ensayo:
         description: 'Hace todo y no publica ni anota nada'
@@ -46,11 +60,11 @@ on:
         required: false
         default: ''
       repo:
-        description: 'Solo con ensayo y una huella que no está en el estado: repo afectado'
+        description: 'Solo con ensayo y una huella que no está en el estado: repo afectado. Con huella=supervisor: supervisor'
         required: false
         default: ''
       workflow:
-        description: 'Solo con ensayo: archivo del workflow (vigilar-leyes-estatales.yml)'
+        description: 'Solo con ensayo: archivo del workflow (vigilar-leyes-estatales.yml). Con huella=supervisor: supervisor.yml'
         required: false
         default: ''
       job:
@@ -62,11 +76,11 @@ on:
         required: false
         default: ''
       corrida:
-        description: 'Solo con ensayo: id de una corrida que falló así'
+        description: 'Solo con ensayo: id de una corrida que falló así. Con huella=supervisor: la última corrida fallida de supervisor.yml'
         required: false
         default: ''
       origen:
-        description: 'Quién lanzó la corrida (supervisor); vacío = a mano'
+        description: 'Quién lanzó la corrida (supervisor, scheduler); vacío = a mano'
         required: false
         default: ''
 
@@ -89,19 +103,55 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: write   # el intento se anota en estado/acciones.jsonl
+      actions: read     # al reparar al supervisor: su corrida fallida y el tope del día
+      issues: write     # al reparar al supervisor: la constancia de lo que no llega al agente
     outputs:
       repo: ${{ steps.huella.outputs.repo }}
       partida: ${{ steps.huella.outputs.partida }}
+      seguir: ${{ steps.huella.outputs.seguir }}
+      codigo: ${{ steps.codigo.outputs.codigo }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
+      - name: Código con el que se juzga
+        # Las compuertas son las de main. Si el código de main ni siquiera se
+        # deja importar (eso mismo puede ser la falla), todo lo determinista de
+        # esta corrida sale del commit de la última corrida buena de
+        # supervisor.yml, que tiene que ser un antepasado de main.
+        id: codigo
+        if: ${{ inputs.huella == 'supervisor' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          pip install -q -r requirements.txt
+          if python -c 'import supervisor.reparar, supervisor.compuertas'; then
+            exit 0
+          fi
+          sano=$(gh api "repos/$ORG/supervisor/actions/workflows/supervisor.yml/runs?branch=main&status=success&per_page=1" \
+                   --jq '.workflow_runs[0].head_sha // ""')
+          if ! [[ "$sano" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::El código de main no se deja importar y no hay una corrida buena de supervisor.yml de la que partir."
+            exit 1
+          fi
+          lugar=$(gh api "repos/$ORG/supervisor/compare/$sano...main" --jq .status)
+          if [ "$lugar" != ahead ] && [ "$lugar" != identical ]; then
+            echo "::error::El commit de la última corrida buena ($sano) no es un antepasado de main."
+            exit 1
+          fi
+          git fetch -q --depth 1 origin "$sano"
+          git checkout -q --detach "$sano"
+          python -c 'import supervisor.reparar, supervisor.compuertas'
+          echo "::notice::El código de main no se deja importar: se juzga con el de $sano."
+          echo "codigo=$sano" >> "$GITHUB_OUTPUT"
       - name: Huella, log recortado y briefs
         id: huella
         env:
           # Solo para leer: las corridas y sus logs, y el issue de la huella.
           GITHUB_TOKEN: ${{ secrets.SUPERVISOR_TOKEN }}
+          # Al reparar al supervisor se lee con el token del job: el suyo puede ser lo que falla.
+          TOKEN_DEL_JOB: ${{ github.token }}
           HUELLA: ${{ inputs.huella }}
           ENSAYO: ${{ inputs.ensayo }}
           BASE: ${{ inputs.base }}
@@ -112,25 +162,26 @@ jobs:
           DE_CORRIDA: ${{ inputs.corrida }}
         run: |
           extra=()
-          if [ "$ENSAYO" = true ]; then
+          if [ "$HUELLA" = supervisor ]; then
+            export GITHUB_TOKEN="$TOKEN_DEL_JOB"
+            extra=(--base "$BASE" --repo "$DE_REPO" --workflow "$DE_WORKFLOW" --corrida "$DE_CORRIDA")
+            if [ "$ENSAYO" = true ]; then extra+=(--ensayo); fi
+          elif [ "$ENSAYO" = true ]; then
             extra=(--ensayo --base "$BASE" --repo "$DE_REPO" --workflow "$DE_WORKFLOW" --job "$DE_JOB"
                    --paso "$DE_PASO" --corrida "$DE_CORRIDA")
           elif [ -n "$BASE$DE_REPO$DE_WORKFLOW$DE_JOB$DE_PASO$DE_CORRIDA" ]; then
-            echo "::error::base, repo, workflow, job, paso y corrida solo valen con ensayo=true."
+            echo "::error::base, repo, workflow, job, paso y corrida solo valen con ensayo=true o con huella=supervisor."
             exit 1
           fi
           python -m supervisor.reparar preparar --huella "$HUELLA" --salida "$RUNNER_TEMP/preparado" \
             --clon "$RUNNER_TEMP/afectado" "${extra[@]}"
-          python3 - "$RUNNER_TEMP/preparado/huella.json" >> "$GITHUB_OUTPUT" <<'PY'
-          import json, sys
-          d = json.load(open(sys.argv[1], encoding="utf-8"))
-          print(f"repo={d['registro']['repo']}\npartida={d['partida']}")
-          PY
       - name: Contar el intento antes del agente
         # Uno que se cae también cuenta. Si no se puede anotar, el agente no corre.
-        if: ${{ !inputs.ensayo }}
+        # Los del supervisor se cuentan por el título de estas corridas, no en el estado.
+        if: ${{ !inputs.ensayo && inputs.huella != 'supervisor' }}
         run: python -m supervisor.reparar anotar --accion intento-iniciado --huella-json "$RUNNER_TEMP/preparado/huella.json"
       - uses: actions/upload-artifact@v4
+        if: ${{ steps.huella.outputs.seguir == 'true' }}
         with:
           name: preparado
           path: ${{ runner.temp }}/preparado
@@ -138,6 +189,7 @@ jobs:
 
   agente:
     needs: preparar
+    if: ${{ needs.preparar.outputs.seguir == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 80
     permissions: {}
@@ -147,6 +199,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: ${{ needs.preparar.outputs.codigo }}
           persist-credentials: false
       - uses: actions/setup-python@v6
         with:
@@ -179,6 +232,8 @@ jobs:
         # agente, y el agente (otro usuario, sin sudo) no puede leer la memoria
         # del proceso. El paso siguiente lo comprueba.
         id: puerta
+        # El supervisor no descarga nada de sitios mexicanos: reparándolo no hay puerta.
+        if: ${{ inputs.huella != 'supervisor' }}
         env:
           EGRESS_MX_TOKEN: ${{ secrets.EGRESS_MX_TOKEN }}
         run: |
@@ -278,10 +333,14 @@ jobs:
     # Sin ningún secreto. La entrega del agente son datos: se pone sobre un clon
     # limpio del commit de partida y de ahí sale el parche.
     needs: [preparar, agente]
-    if: ${{ always() && needs.preparar.result == 'success' }}
+    if: ${{ always() && needs.preparar.result == 'success' && needs.preparar.outputs.seguir == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 50
-    permissions: {}
+    # Solo lectura de lo que ya es público: es lo único que llega a ver el
+    # código de un arreglo al supervisor, en su vuelta de prueba en modo informe.
+    permissions:
+      actions: read
+      contents: read
     env:
       REPO: ${{ needs.preparar.outputs.repo }}
       PARTIDA: ${{ needs.preparar.outputs.partida }}
@@ -293,6 +352,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: ${{ needs.preparar.outputs.codigo }}
           persist-credentials: false
       - uses: actions/setup-python@v6
         with:
@@ -332,9 +392,13 @@ jobs:
             --trabajo "$RUNNER_TEMP/compuertas" --hermanos "$RUNNER_TEMP/hermanos"
       - name: Compuertas que ejecutan el arreglo (pytest y Workers)
         # Al final y con otro usuario, sobre una copia: lo que corra aquí no
-        # puede cambiar el parche ni el informe de las compuertas.
+        # puede cambiar el parche ni el informe de las compuertas. Un arreglo
+        # al supervisor corre además una vuelta en modo informe, y para ella
+        # recibe el token de solo lectura de este job; ningún otro.
         id: dinamicas
         if: ${{ steps.estaticas.outputs.pasa == 'true' && steps.estaticas.outputs.veredicto == 'arreglo' }}
+        env:
+          LECTURA_TOKEN: ${{ inputs.huella == 'supervisor' && github.token || '' }}
         run: |
           bash scripts/agente/infra.sh aislar pruebas
           sudo cp -R "$RUNNER_TEMP/despues" /srv/pruebas
@@ -368,6 +432,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: ${{ needs.preparar.outputs.codigo }}
           persist-credentials: false
       - uses: actions/download-artifact@v4
         with:
@@ -414,14 +479,19 @@ jobs:
     # las compuertas y el juez contestó (sí, no, no); en cualquier otro final
     # anota el descarte con su motivo. Con ensayo no publica ni anota.
     needs: [preparar, agente, compuertas, juez]
-    if: ${{ always() && inputs.revertir == '' && needs.preparar.result == 'success' }}
+    if: ${{ always() && inputs.revertir == '' && needs.preparar.result == 'success' && needs.preparar.outputs.seguir == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
     permissions:
       contents: write   # estado/acciones.jsonl
       issues: write     # el resultado, en el issue de la huella
+    outputs:
+      publicado: ${{ steps.publicar.outputs.publicado }}
+      desde: ${{ steps.publicar.outputs.desde }}
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.preparar.outputs.codigo }}
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
@@ -432,6 +502,8 @@ jobs:
         with:
           path: ${{ runner.temp }}/artefactos
       - name: Herramientas
+        env:
+          HUELLA: ${{ inputs.huella }}
         run: |
           pip install -q -r requirements.txt
           bash <(curl -fsSL "https://raw.githubusercontent.com/rhysd/actionlint/v$ACTIONLINT/scripts/download-actionlint.bash") "$ACTIONLINT" "$RUNNER_TEMP"
@@ -440,8 +512,11 @@ jobs:
           for otro in constitucion-extractor fiscal-extractor congreso-extractor; do
             git clone -q --depth 1 "https://github.com/$ORG/$otro.git" "$RUNNER_TEMP/hermanos/$otro"
           done
-          git pull -q --ff-only origin main
+          # El estado al día, para anotar. Reparando al supervisor no se anota
+          # nada ahí, y el código que publica es el que juzgó, no el de main.
+          if [ "$HUELLA" != supervisor ]; then git pull -q --ff-only origin main; fi
       - name: Publicar el arreglo o anotar el descarte
+        id: publicar
         # Aquí no se ejecuta nada del arreglo: el parche se aplica con git y se
         # vuelven a correr las compuertas que solo leen.
         env:
@@ -491,3 +566,45 @@ jobs:
           HUELLA: ${{ inputs.huella }}
           SHA: ${{ inputs.revertir }}
         run: python -m supervisor.reparar revertir --huella "$HUELLA" --sha "$SHA" --trabajo "$RUNNER_TEMP/revertir"
+
+  verificar:
+    # Solo al reparar al propio supervisor, con el arreglo ya en main: espera
+    # su siguiente corrida. Si termina bien, cierra la constancia; si falla o
+    # no termina a tiempo, revierte el arreglo. Lo decide esta corrida porque
+    # el reconciliador, roto, no puede vigilarlo.
+    needs: [preparar, publicar]
+    if: ${{ always() && inputs.huella == 'supervisor' && needs.publicar.outputs.publicado != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      actions: read     # la corrida de prueba de supervisor.yml
+      issues: write     # el resultado, en el issue de la reparación
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.preparar.outputs.codigo }}
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Herramientas
+        run: |
+          pip install -q -r requirements.txt
+          bash <(curl -fsSL "https://raw.githubusercontent.com/rhysd/actionlint/v$ACTIONLINT/scripts/download-actionlint.bash") "$ACTIONLINT" "$RUNNER_TEMP"
+          sudo install -m 755 "$RUNNER_TEMP/actionlint" /usr/local/bin/actionlint
+          mkdir -p "$RUNNER_TEMP/hermanos"
+          for otro in constitucion-extractor fiscal-extractor congreso-extractor; do
+            git clone -q --depth 1 "https://github.com/$ORG/$otro.git" "$RUNNER_TEMP/hermanos/$otro"
+          done
+      - name: Esperar la corrida de prueba y revertir si no pasa
+        timeout-minutes: 50
+        env:
+          # Para subir el revert; lo demás (leer la corrida, el issue) va con el token del job.
+          SUPERVISOR_TOKEN: ${{ secrets.SUPERVISOR_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
+          PUBLICADO: ${{ needs.publicar.outputs.publicado }}
+          DESDE: ${{ needs.publicar.outputs.desde }}
+        run: |
+          python -m supervisor.reparar verificar --commit "$PUBLICADO" --desde "$DESDE" \
+            --trabajo "$RUNNER_TEMP/verificar" --hermanos "$RUNNER_TEMP/hermanos"

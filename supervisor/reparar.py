@@ -6,6 +6,14 @@
     python -m supervisor.reparar dinamicas  …   las compuertas que ejecutan código del arreglo
     python -m supervisor.reparar publicar   …   decide, publica, anota, relanza y comenta
     python -m supervisor.reparar revertir   …   `git revert` de un arreglo publicado
+    python -m supervisor.reparar verificar  …   espera la corrida de prueba de un arreglo al propio
+                                                supervisor y lo revierte si no pasa
+
+Con `--huella supervisor` (`PROPIA`) lo que se repara es el supervisor mismo:
+lo lanza el Worker scheduler cuando supervisor.yml lleva varias corridas
+fallidas. Roto, el reconciliador no puede vigilar nada ni leer su estado, así
+que ese modo no usa `estado/`: la falla sale de la corrida indicada, los topes
+se cuentan en la API y la constancia va a un issue propio.
 
 El agente nunca corre aquí: entrega archivos, y lo que entrega se trata como
 datos. Lo que se publica sale siempre de un clon limpio.
@@ -31,7 +39,7 @@ from . import invariantes as inv
 from . import politica
 from .estado import Estado
 from .invariantes import instante, iso
-from .observar import Cliente, ErrorApi, cola_del_paso, recortar_corrida, recortar_job
+from .observar import Cliente, ErrorApi, _jobs_de, cola_del_paso, recortar_corrida, recortar_job
 
 RAIZ = _cadenas.RAIZ
 AGENTE = RAIZ / "scripts" / "agente"
@@ -40,12 +48,27 @@ AUTOR = ("Claude (agente OpenCodice)", "noreply@anthropic.com")
 VEREDICTOS = ("arreglo", "no-es-infra", "no-puedo")
 # Lo que el juez tiene que contestar para que el arreglo siga.
 JUEZ_ESPERADO = {"arregla_la_causa": "si", "cambia_algo_innecesario": "no", "riesgo": "no"}
+# La huella reservada para el propio supervisor: no sale de `estado/`, la da quien lanza.
+PROPIA = "supervisor"
+ETIQUETA = "supervisor"
 _SHA = re.compile(r"[0-9a-f]{7,40}")
 _NOMBRE = re.compile(r"[A-Za-z0-9._-]+")
 
 
 class Descarte(Exception):
     """El arreglo no sigue; el mensaje es el motivo que queda anotado."""
+
+
+class SinTrabajo(Descarte):
+    """No hay nada que reparar (o no toca todavía): la corrida termina bien, sin agente."""
+
+
+def _salidas(**valores: str) -> None:
+    """Salidas del paso para los jobs siguientes."""
+    ruta = os.environ.get("GITHUB_OUTPUT")
+    if ruta:
+        with open(ruta, "a", encoding="utf-8") as f:
+            f.write("".join(f"{k}={v}\n" for k, v in valores.items()))
 
 
 def _ahora() -> datetime:
@@ -279,8 +302,10 @@ def _lista_md(elementos: list[str]) -> str:
 def armar_brief(plantilla: str, reg: dict, cadenas: _cadenas.Cadenas, *, rutas: dict, previos: list[dict],
                 issue: str | None, puerta: str, limite: str) -> str:
     """El encargo del agente. Solo lleva lo que salió del estado, del log y del issue del supervisor."""
-    alcance = cadenas.alcance(reg["repo"]) or {}
     conf = cadenas.reparacion
+    alcance = cadenas.alcance(reg["repo"]) or {}
+    if reg["repo"] == cadenas.general["repo_supervisor"]:
+        alcance = conf = conf | (conf.get("propio") or {})
     huella = {k: reg.get(k) for k in ("huella", "repo", "workflow", "job", "paso", "firma", "clase", "corridas")}
     if previos:
         bloques = []
@@ -312,24 +337,124 @@ def armar_brief(plantilla: str, reg: dict, cadenas: _cadenas.Cadenas, *, rutas: 
     return plantilla
 
 
+# --------------------------------------------------------------------------
+# El propio supervisor: la falla, los topes y la constancia salen de la API
+# --------------------------------------------------------------------------
+
+def conf_propia(cadenas: _cadenas.Cadenas) -> dict:
+    conf = cadenas.reparacion.get("propio")
+    if not conf or not conf.get("workflow"):
+        raise Descarte("el supervisor no declara `[reparacion.propio]`: no se repara a sí mismo")
+    return conf
+
+
+def _repo_propio(cadenas: _cadenas.Cadenas) -> str:
+    return f"repos/{cadenas.org}/{cadenas.general['repo_supervisor']}"
+
+
+def sesiones_propias(corridas: list[dict], ahora: datetime, salvo: int | None = None) -> int:
+    """Corridas de reparar-infra sobre el propio supervisor en las últimas 24 h, por su título
+    (`huella=[supervisor]`): el tope se cuenta sin leer `estado/`. Los ensayos no cuentan."""
+    desde = ahora - timedelta(hours=24)
+    n = 0
+    for c in corridas:
+        leido = inv.analizar_titulo(c.get("display_title"))
+        if not leido or leido[1].get("huella") != PROPIA or leido[1].get("ensayo") == "true":
+            continue
+        if c.get("id") != salvo and instante(c["created_at"]) >= desde:
+            n += 1
+    return n
+
+
+def registro_propio(cliente: Cliente, cadenas: _cadenas.Cadenas, corrida: str, ahora: datetime,
+                    ensayo: bool = False, esta: int | None = None) -> dict:
+    """La huella de la falla del supervisor, de la corrida que dio quien lanzó. Descarta sin agente
+    lo que no es para él: una corrida que no falló, un supervisor que ya corre, el tope del día,
+    una credencial o una falla pasajera."""
+    conf, repo = conf_propia(cadenas), _repo_propio(cadenas)
+    if not str(corrida).isdigit():
+        raise Descarte("`corrida` tiene que ser el id de una corrida fallida de " + conf["workflow"])
+    cruda = cliente.get(f"{repo}/actions/runs/{int(corrida)}")
+    c = recortar_corrida(cruda)
+    if inv.archivo_de(c) != conf["workflow"] or cruda.get("head_branch") != "main":
+        raise Descarte(f"la corrida {corrida} no es de {conf['workflow']} en main")
+    if c.get("status") != "completed" or c.get("conclusion") not in inv.FALLAS:
+        raise Descarte(f"la corrida {corrida} no terminó en falla ({c.get('conclusion') or c.get('status')})")
+    if not ensayo:
+        recientes = cliente.get(f"{repo}/actions/workflows/{conf['workflow']}/runs", branch="main", per_page=20)
+        terminadas = [x for x in recientes.get("workflow_runs", []) if x.get("status") == "completed"
+                      and x.get("conclusion") in inv.FALLAS | {"success"}]
+        if terminadas and terminadas[0].get("conclusion") == "success":
+            raise SinTrabajo(f"{conf['workflow']} ya volvió a correr bien (corrida {terminadas[0]['id']})")
+        desde = (ahora - timedelta(hours=25)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        mias = cliente.paginas(f"{repo}/actions/workflows/{cadenas.reparacion['workflow']}/runs", "workflow_runs",
+                               created=f">={desde}")
+        tope, hechas = conf.get("max_por_dia", 2), sesiones_propias(mias, ahora, salvo=esta)
+        if hechas >= tope:
+            raise SinTrabajo(f"ya hubo {hechas} reparaciones del supervisor en 24 h (tope: {tope})")
+    jobs = _jobs_de(cliente, cadenas.org, cadenas.general["repo_supervisor"], c, cadenas.general.get("lineas_log", 40), None)
+    falla = inv.falla_de(c | {"jobs": jobs}) or {"job": "", "paso": "", "firma": c.get("conclusion") or ""}
+    clase = politica.clasificar(falla, None, cadenas)
+    if clase == "credencial" or re.search(r"rechazó el token", falla["firma"]):
+        raise SinTrabajo(f"la falla es de una credencial, no del código: {falla['firma'][:200]}")
+    if clase == "transitoria":
+        raise SinTrabajo(f"la falla es pasajera, no del código: {falla['firma'][:200]}")
+    return {"huella": PROPIA, "repo": cadenas.general["repo_supervisor"], "workflow": conf["workflow"],
+            "job": falla["job"], "paso": falla["paso"], "firma": falla["firma"], "clase": "determinista",
+            "corridas": [int(corrida)], "estado": "propio", "invariante": "propio"}
+
+
+def constancia_propia(cliente, cadenas: _cadenas.Cadenas, texto: str, cerrar: bool = False) -> int | None:
+    """Deja `texto` en el issue de la reparación del supervisor (lo abre si no hay uno abierto)."""
+    repo = _repo_propio(cadenas)
+    cuerpo = f"{texto}\n\nSesión: {_corrida_url()}\n\nConstancia pública del supervisor; no es una asignación."
+    try:
+        abiertos = cliente.paginas(f"{repo}/issues", state="open", labels=ETIQUETA)
+        numero = next((i["number"] for i in abiertos
+                       if str(i.get("title") or "").startswith(f"[{PROPIA}]") and "pull_request" not in i), None)
+        if numero is None:
+            numero = cliente.post(f"{repo}/issues", {
+                "title": f"[{PROPIA}] El supervisor no corre: reparación automática", "body": cuerpo,
+                "labels": [ETIQUETA]})["number"]
+        else:
+            cliente.post(f"{repo}/issues/{numero}/comments", {"body": cuerpo})
+        if cerrar:
+            cliente.patch(f"{repo}/issues/{numero}", {"state": "closed"})
+        return numero
+    except (ErrorApi, KeyError, TypeError) as e:
+        print(f"::warning::No se pudo dejar constancia en un issue: {e}")
+        return None
+
+
 def preparar(args, cadenas: _cadenas.Cadenas, cliente: Cliente, ahora: datetime) -> int:
     salida = Path(args.salida)
     salida.mkdir(parents=True, exist_ok=True)
-    estado = leer_estado(args.estado, cadenas, ahora)
-    ensayo = {k: getattr(args, k) for k in ("repo", "workflow", "job", "paso", "corrida")} if args.ensayo else None
-    reg = registro_de(estado, args.huella, ensayo)
-    comprobar_registro(reg, cadenas)
-    if not args.ensayo:
-        if args.base:
-            raise Descarte("`base` solo vale con `ensayo`")
-        tope = cadenas.politica.get("intentos_agente_por_huella", 2)
-        hechos = politica.intentos_de(estado.acciones, reg, cadenas, ahora)
-        if hechos >= tope:
-            raise Descarte(f"la huella ya gastó sus {tope} intentos")
-        if arreglo_vigente(estado.acciones, args.huella):
-            raise Descarte("la huella tiene un arreglo publicado en prueba")
+    propia = args.huella == PROPIA
+    if args.base and not args.ensayo:
+        raise Descarte("`base` solo vale con `ensayo`")
     if args.base and not _SHA.fullmatch(args.base):
         raise Descarte("`base` tiene que ser un sha")
+    if propia:
+        conf = conf_propia(cadenas)
+        if (args.repo, args.workflow) != (cadenas.general["repo_supervisor"], conf["workflow"]):
+            raise Descarte(f"con `huella={PROPIA}` van `repo={cadenas.general['repo_supervisor']}` y "
+                           f"`workflow={conf['workflow']}`")
+        esta = int(os.environ["GITHUB_RUN_ID"]) if os.environ.get("GITHUB_RUN_ID") else None
+        reg = registro_propio(cliente, cadenas, args.corrida, ahora, ensayo=args.ensayo, esta=esta)
+        acciones: list[dict] = []
+    else:
+        estado = leer_estado(args.estado, cadenas, ahora)
+        acciones = estado.acciones
+        ensayo = {k: getattr(args, k) for k in ("repo", "workflow", "job", "paso", "corrida")} if args.ensayo else None
+        reg = registro_de(estado, args.huella, ensayo)
+        comprobar_registro(reg, cadenas)
+        if not args.ensayo:
+            tope = cadenas.politica.get("intentos_agente_por_huella", 2)
+            hechos = politica.intentos_de(acciones, reg, cadenas, ahora)
+            if hechos >= tope:
+                raise Descarte(f"la huella ya gastó sus {tope} intentos")
+            if arreglo_vigente(acciones, args.huella):
+                raise Descarte("la huella tiene un arreglo publicado en prueba")
 
     clon = Path(args.clon)
     partida = clonar(url_de(cadenas.org, reg["repo"]), clon, args.base or None)
@@ -337,20 +462,22 @@ def preparar(args, cadenas: _cadenas.Cadenas, cliente: Cliente, ahora: datetime)
     if not reg.get("firma"):
         reg["firma"] = firma or ""
     (salida / "log.txt").write_text(log + "\n", encoding="utf-8")
-    previos = intentos_previos(estado.acciones, args.huella, clon)
-    issue = cuerpo_del_issue(cliente, f"{cadenas.org}/{cadenas.general['repo_supervisor']}", reg)
+    previos = intentos_previos(acciones, args.huella, clon)
+    issue = None if propia else cuerpo_del_issue(cliente, f"{cadenas.org}/{cadenas.general['repo_supervisor']}", reg)
     minutos = int(args.minutos)
     limite = (ahora + timedelta(minutes=minutos - 5)).strftime("%H:%M UTC")
     rutas = {"repo": args.dir_repo, "log": f"{args.dir_entrada}/log.txt", "veredicto": f"{args.dir_salida}/veredicto.json",
              "lint": f"{args.dir_entrada}/lint_workflows.py", "parche": f"{args.dir_entrada}/arreglo.patch",
              "partida": args.dir_repo}
-    for nombre, plantilla in (("brief.md", "brief-infra.md"), ("brief-juez.md", "brief-juez-infra.md")):
+    plantillas = ("brief-propio.md", "brief-juez-propio.md") if propia else ("brief-infra.md", "brief-juez-infra.md")
+    for nombre, plantilla in zip(("brief.md", "brief-juez.md"), plantillas):
         (salida / nombre).write_text(armar_brief(
             (AGENTE / plantilla).read_text(encoding="utf-8"), reg, cadenas, rutas=rutas, previos=previos,
             issue=issue, puerta="__PUERTA__", limite=limite), encoding="utf-8")
     (salida / "huella.json").write_text(json.dumps({
         "registro": reg, "partida": partida, "ensayo": bool(args.ensayo), "intento": len(previos) + 1,
         "cuando": iso(ahora)}, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+    _salidas(repo=reg["repo"], partida=partida, seguir="true")
     print(f"Huella {args.huella}: {reg['repo']}/{reg['workflow']} · {reg.get('job')} / {reg.get('paso')}")
     print(f"Partida {partida[:12]} · {len(log.splitlines())} líneas de log · {len(previos)} intentos previos")
     if firma and reg.get("firma") and firma != reg["firma"]:
@@ -483,7 +610,7 @@ def correr_compuertas(args, cadenas: _cadenas.Cadenas) -> int:
     datos = json.loads(Path(args.huella_json).read_text(encoding="utf-8"))
     reg, antes, despues = datos["registro"], Path(args.antes), Path(args.despues)
     veredicto = leer_veredicto(Path(args.veredicto))
-    resultado = cp.Resultado()
+    resultado, nuevos = cp.Resultado(), []
     try:
         if _git(antes, "rev-parse", "HEAD").stdout.strip() != datos["partida"]:
             raise Descarte("el clon de partida no está en el commit de partida")
@@ -491,12 +618,13 @@ def correr_compuertas(args, cadenas: _cadenas.Cadenas) -> int:
         if Path(args.entrega).is_file():
             superponer(Path(args.entrega), borrados, despues)
         cambios = cp.cambios_de_git(antes, despues)
+        nuevos = [c.ruta for c in cambios if c.tipo == "A"]
         resultado = cp.evaluar(antes, despues, cambios, reg, cadenas, hermanos=Path(args.hermanos) if args.hermanos else None)
         (trabajo / "arreglo.patch").write_text(parche_de(despues), encoding="utf-8")
     except Descarte as e:
         resultado.falla("alcance", str(e))
         (trabajo / "arreglo.patch").write_text("", encoding="utf-8")
-    informe = resultado.como_dict() | {"veredicto": veredicto, "partida": datos["partida"],
+    informe = resultado.como_dict() | {"veredicto": veredicto, "partida": datos["partida"], "nuevos": nuevos,
                                        "sha_parche": sha256(trabajo / "arreglo.patch")}
     (trabajo / "compuertas.json").write_text(json.dumps(informe, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
     print(f"Veredicto del agente: {veredicto['resultado']}")
@@ -517,7 +645,14 @@ def correr_dinamicas(args, cadenas: _cadenas.Cadenas) -> int:
     datos = json.loads(Path(args.huella_json).read_text(encoding="utf-8"))
     prefijo = ["sudo", "-n", "-u", args.como, "-H", "env", "-i", f"PATH={os.environ.get('PATH', '')}",
                f"HOME=/home/{args.como}", "LANG=C.UTF-8"] if args.como else None
-    r = cp.dinamicas(Path(args.arbol), informe.get("archivos") or [], cadenas, datos["registro"]["repo"], prefijo)
+    repo = datos["registro"]["repo"]
+    if cp.es_propio(cadenas, repo):
+        # Lo único que recibe el código del arreglo: un token que solo lee, para la vuelta en modo informe.
+        lectura = {"GITHUB_TOKEN": os.environ["LECTURA_TOKEN"]} if os.environ.get("LECTURA_TOKEN") else {}
+        r = cp.dinamicas_propio(Path(args.arbol), informe.get("nuevos") or [], cadenas, prefijo, lectura=lectura,
+                                trabajo=Path(f"/home/{args.como}/propio") if args.como else None)
+    else:
+        r = cp.dinamicas(Path(args.arbol), informe.get("archivos") or [], cadenas, repo, prefijo)
     Path(args.salida).write_text(json.dumps(r.como_dict(), ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
     print(f"Compuertas que ejecutan el arreglo ({', '.join(r.corridas) or 'ninguna'}): {'pasan' if r.pasa else 'NO pasan'}")
     for f in r.fallas:
@@ -674,6 +809,8 @@ def publicar(args, cadenas: _cadenas.Cadenas, ahora: datetime) -> int:
     if args.ensayo:
         resumen.append(f"Ensayo: {'se habría publicado' if se_publica else 'se habría descartado: ' + motivo}. "
                        "No se publicó ni se anotó nada.")
+    elif reg["repo"] == cadenas.general["repo_supervisor"]:
+        resumen.append(publicar_propio(args, cadenas, reg, parche if se_publica else None, motivo, veredicto, trabajo))
     else:
         token = os.environ.get("SUPERVISOR_TOKEN") or None
         propio = Cliente(os.environ.get("GITHUB_TOKEN"))
@@ -736,6 +873,131 @@ def publicar(args, cadenas: _cadenas.Cadenas, ahora: datetime) -> int:
         with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as f:
             f.write(texto)
     return codigo
+
+
+def publicar_propio(args, cadenas: _cadenas.Cadenas, reg: dict, parche: Path | None, motivo: str, veredicto: dict,
+                    trabajo: Path) -> str:
+    """Publica un arreglo al propio supervisor y lanza su corrida de prueba, o deja constancia del
+    descarte. No anota nada en `estado/`: quien lo vigila es el job `verificar` de esta corrida."""
+    conf = conf_propia(cadenas)
+    token = os.environ.get("SUPERVISOR_TOKEN") or None
+    propio = Cliente(os.environ.get("GITHUB_TOKEN"))
+    repo = cadenas.general["repo_supervisor"]
+    que = f"`{conf['workflow']}` · {reg.get('job') or '—'} / {reg.get('paso') or '—'} · `{reg.get('firma') or ''}`"
+    if parche is not None:
+        try:
+            cuerpo = (f"Causa: {veredicto.get('causa_raiz') or veredicto.get('explicacion') or '—'}\n\n"
+                      f"Arreglo escrito por el agente de infraestructura al propio supervisor; pasó sus compuertas "
+                      f"deterministas, una vuelta en modo informe y un juez independiente. Si la siguiente corrida de "
+                      f"{conf['workflow']} falla, se revierte solo.\nSesión: {_corrida_url()}")
+            # Desde antes de subir: la corrida de prueba es la primera que trae el commit.
+            desde = _ahora()
+            hecho = aplicar_y_publicar(url_de(cadenas.org, repo, token), parche, reg, cadenas, trabajo, token=token,
+                                       cuerpo=cuerpo, hermanos=Path(args.hermanos) if args.hermanos else None)
+        except (Descarte, RuntimeError) as e:
+            parche, motivo = None, str(e)
+        else:
+            try:
+                Cliente(token).post(f"{_repo_propio(cadenas)}/actions/workflows/{conf['workflow']}/dispatches",
+                                    {"ref": "main", "inputs": {"origen": "reparar-infra"}})
+                prueba = "se lanzó su corrida de prueba"
+            except ErrorApi as e:
+                prueba = f"no se pudo lanzar su corrida de prueba (HTTP {e.estado}): vale la siguiente del reloj"
+            enlace = f"https://github.com/{cadenas.org}/{repo}/commit/{hecho['commit']}"
+            _salidas(publicado=hecho["commit"], desde=iso(desde))
+            constancia_propia(propio, cadenas, (
+                f"**Arreglo publicado** al supervisor: {enlace} ({', '.join(hecho['archivos'])})\n\n{que}\n\n"
+                f"Causa: {veredicto.get('causa_raiz') or '—'}\n\nPasó las compuertas deterministas, una vuelta en "
+                f"modo informe y el juez; {prueba}. Si la siguiente corrida de `{conf['workflow']}` falla o no "
+                f"termina en {conf.get('verificar_max_min', 40)} minutos, se revierte solo."))
+            return f"**Publicado**: {enlace} ({', '.join(hecho['archivos'])}); {prueba}."
+    constancia_propia(propio, cadenas, f"**Intento descartado** de reparar el supervisor: {motivo}\n\n{que}")
+    return f"**Descartado**: {motivo}"
+
+
+def _incluye(cliente, cadenas: _cadenas.Cadenas, commit: str, cabeza: str) -> bool:
+    """¿El commit `cabeza` (el de una corrida) trae ya a `commit`?"""
+    if cabeza == commit:
+        return True
+    try:
+        return cliente.get(f"{_repo_propio(cadenas)}/compare/{commit}...{cabeza}").get("status") in ("ahead", "identical")
+    except ErrorApi:
+        return False
+
+
+def prueba_propia(cliente, cadenas: _cadenas.Cadenas, commit: str, desde: datetime) -> tuple[str, dict | None]:
+    """(pasa | falla | espera, corrida): la primera corrida terminada del workflow del supervisor que
+    ya trae el arreglo. Una cancelada no dice nada."""
+    conf = conf_propia(cadenas)
+    # Con margen por si los relojes no coinciden: lo que decide es que la corrida traiga el commit.
+    creadas = (desde - timedelta(minutes=10)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    corridas = cliente.get(f"{_repo_propio(cadenas)}/actions/workflows/{conf['workflow']}/runs", branch="main",
+                           per_page=50, created=f">={creadas}").get("workflow_runs", [])
+    for c in sorted(corridas, key=lambda c: (c["created_at"], c["id"])):
+        if c.get("status") != "completed" or c.get("conclusion") not in inv.FALLAS | {"success"}:
+            continue
+        if _incluye(cliente, cadenas, commit, str(c.get("head_sha") or "")):
+            return ("pasa" if c["conclusion"] == "success" else "falla"), recortar_corrida(c)
+    return "espera", None
+
+
+def _es_arreglo_nuestro(cliente, cadenas: _cadenas.Cadenas, commit: str) -> bool:
+    """Solo se revierte un commit que este flujo publicó: con su autoría y su título."""
+    try:
+        leido = cliente.get(f"{_repo_propio(cadenas)}/commits/{commit}")["commit"]
+    except (ErrorApi, KeyError, TypeError):
+        return False
+    return ((leido.get("author") or {}).get("name") == AUTOR[0]
+            and str(leido.get("message") or "").startswith(mensaje_de({"huella": PROPIA, "paso": ""}).split(":")[0]))
+
+
+def verificar(args, cadenas: _cadenas.Cadenas, ahora: datetime, dormir=None, reloj=_ahora) -> int:
+    """El final de una reparación del propio supervisor: espera la corrida de prueba; si pasa,
+    cierra la constancia; si falla o no hay resultado a tiempo, revierte el arreglo.
+
+    Lo decide esta misma corrida porque el reconciliador, roto, no puede vigilarlo.
+    """
+    import time
+    dormir = dormir or time.sleep
+    conf = conf_propia(cadenas)
+    if not _SHA.fullmatch(args.commit) or len(args.commit) != 40:
+        raise Descarte("`commit` tiene que ser el sha completo del arreglo publicado")
+    cliente = Cliente(os.environ.get("GITHUB_TOKEN"))
+    token = os.environ.get("SUPERVISOR_TOKEN") or None
+    desde = instante(args.desde)
+    limite = desde + timedelta(minutes=conf.get("verificar_max_min", 40))
+    veredicto, corrida = "espera", None
+    while True:
+        try:
+            veredicto, corrida = prueba_propia(cliente, cadenas, args.commit, desde)
+        except ErrorApi as e:
+            print(f"::warning::No se pudo leer la corrida de prueba: {e}")
+        if veredicto != "espera" or reloj() >= limite:
+            break
+        dormir(30)
+    enlace = f"https://github.com/{cadenas.org}/{cadenas.general['repo_supervisor']}/actions/runs/{corrida['id']}" if corrida else ""
+    if veredicto == "pasa":
+        print(f"La corrida {corrida['id']} de {conf['workflow']} terminó bien con el arreglo {args.commit[:12]}.")
+        constancia_propia(cliente, cadenas, f"**Resuelto**: con el arreglo `{args.commit[:12]}`, la corrida "
+                                            f"{enlace} de `{conf['workflow']}` terminó bien.", cerrar=True)
+        return 0
+    por_que = (f"la corrida {enlace} de `{conf['workflow']}` volvió a fallar" if veredicto == "falla" else
+               f"ninguna corrida de `{conf['workflow']}` con el arreglo terminó en {conf.get('verificar_max_min', 40)} minutos")
+    reg = {"huella": PROPIA, "repo": cadenas.general["repo_supervisor"], "workflow": conf["workflow"], "paso": args.paso}
+    try:
+        if not _es_arreglo_nuestro(cliente, cadenas, args.commit):
+            raise Descarte(f"{args.commit[:12]} no es un arreglo publicado por este flujo")
+        hecho = revertir_commit(url_de(cadenas.org, reg["repo"], token), args.commit, reg, cadenas, Path(args.trabajo),
+                                token=token, hermanos=Path(args.hermanos) if args.hermanos else None)
+    except (Descarte, RuntimeError) as e:
+        print(f"::error::No se pudo revertir {args.commit[:12]}: {e}")
+        constancia_propia(cliente, cadenas, f"**No se pudo revertir** `{args.commit[:12]}` ({por_que}): {e}\n\n"
+                                            "El arreglo sigue en main.")
+        return 1
+    print(f"Revertido {args.commit[:12]} con {hecho['commit_revert'][:12]}: {por_que}.")
+    constancia_propia(cliente, cadenas, f"**Arreglo revertido**: `{args.commit[:12]}` (revert "
+                                        f"`{hecho['commit_revert'][:12]}`), porque {por_que}.")
+    return 0
 
 
 def revertir(args, cadenas: _cadenas.Cadenas) -> int:
@@ -815,12 +1077,27 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--trabajo", required=True)
     p.add_argument("--supervisor", default=str(RAIZ))
     p.add_argument("--hermanos", default="")
+    p = sub.add_parser("verificar")
+    for k in ("commit", "desde", "trabajo"):
+        p.add_argument(f"--{k}", required=True)
+    p.add_argument("--paso", default="")
+    p.add_argument("--hermanos", default="")
     args = an.parse_args(argv)
     cadenas = _cadenas.cargar()
     ahora = _ahora()
     try:
         if args.orden == "preparar":
-            return preparar(args, cadenas, Cliente(), ahora)
+            try:
+                return preparar(args, cadenas, Cliente(), ahora)
+            except Descarte as e:
+                if args.huella != PROPIA or args.ensayo:
+                    raise
+                # Reparar al supervisor deja constancia también cuando no llega al agente.
+                bien = isinstance(e, SinTrabajo)
+                print(f"::{'notice' if bien else 'error'}::{e}")
+                constancia_propia(Cliente(), cadenas, f"**Sin reparación** del supervisor: {e}")
+                _salidas(seguir="false")
+                return 0 if bien else 1
         if args.orden == "anotar":
             datos = json.loads(Path(args.huella_json).read_text(encoding="utf-8"))
             linea = linea_de(args.accion, datos["registro"]["huella"],
@@ -835,6 +1112,8 @@ def main(argv: list[str] | None = None) -> int:
             return correr_dinamicas(args, cadenas)
         if args.orden == "publicar":
             return publicar(args, cadenas, ahora)
+        if args.orden == "verificar":
+            return verificar(args, cadenas, ahora)
         return revertir(args, cadenas)
     except Descarte as e:
         print(f"::error::{e}")

@@ -26,6 +26,13 @@ herramienta, un archivo no se deja leer) cuenta como falla.
 - lint, actionlint, shell, node    sin hallazgos nuevos frente a la partida.
 - pytest, node-test, wrangler      las que ejecutan código del arreglo: van al
              final, sin secretos y con otro usuario.
+
+Cuando el repo es el del propio supervisor (`[reparacion.propio]`) el cerco
+es otro (`_alcance_propio`, `_declarado`, `_lineas_propias`) y las que
+ejecutan el arreglo son `dinamicas_propio`: la suite de main sin lo que el
+arreglo agregó, sus pruebas nuevas aparte, y una vuelta real en modo informe.
+Quien juzga es siempre el código del árbol desde el que corre este módulo,
+nunca el del árbol que se juzga.
 """
 
 from __future__ import annotations
@@ -37,6 +44,8 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
+import tomllib
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -50,6 +59,7 @@ from .rutas import casa
 ESTATICAS = ("alcance", "tamano", "yaml", "poder", "lineas", "contenido", "worker",
              "lint", "actionlint", "shell", "node")
 DINAMICAS = ("pytest", "node-test", "wrangler")
+DINAMICAS_PROPIAS = ("pytest", "pruebas-nuevas", "informe")
 WORKFLOWS = ".github/workflows/"
 
 
@@ -196,6 +206,67 @@ def _alcance(r: Resultado, cambios: list[Cambio], cadenas: Cadenas, repo: str) -
             r.falla("alcance", f"{c.ruta}: es una prueba que ya existía")
         elif not any(casa(c.ruta, p) for p in alcance.get("permitidos", [])):
             r.falla("alcance", f"{c.ruta}: fuera de lo que el arreglo puede tocar")
+
+
+def es_propio(cadenas: Cadenas, repo: str) -> bool:
+    """¿El repo que se juzga es el del propio supervisor?"""
+    return repo == cadenas.general.get("repo_supervisor")
+
+
+def _alcance_propio(r: Resultado, cambios: list[Cambio], cadenas: Cadenas) -> None:
+    """El cerco cuando el arreglo es al supervisor: su código y su workflow, nunca lo que lo juzga.
+
+    Ninguna prueba ni dato de prueba que ya exista cambia, ni una línea: la
+    suite de main es la que dice si el arreglo rompe algo, y agregarle al final
+    también la cambia (una función con el mismo nombre tapa a la anterior).
+    """
+    conf = cadenas.reparacion.get("propio") or {}
+    if not conf:
+        r.falla("alcance", "el supervisor no declara `[reparacion.propio]`: no se repara a sí mismo")
+        return
+    if not cambios:
+        r.falla("alcance", "el arreglo no cambia ningún archivo")
+    for c in cambios:
+        prohibido = next((p for p in conf.get("prohibidos", []) if casa(c.ruta, p)), None)
+        if c.raro:
+            r.falla("alcance", f"{c.ruta}: {c.raro}")
+        elif prohibido:
+            r.falla("alcance", f"{c.ruta}: prohibido ({prohibido})")
+        elif c.tipo == "D":
+            r.falla("alcance", f"{c.ruta}: borra un archivo")
+        elif c.tipo == "A":
+            nombre = c.ruta.rsplit("/", 1)[-1]
+            if not any(casa(c.ruta, p) for p in conf.get("nuevos", [])):
+                r.falla("alcance", f"{c.ruta}: lo único que se puede crear son pruebas ({', '.join(conf.get('nuevos', []))})")
+            elif nombre == "conftest.py" or (nombre.endswith(".py") and not re.fullmatch(r"tests/test_[A-Za-z0-9_]+\.py", c.ruta)):
+                # Un conftest o un módulo dentro de los datos de prueba corre al recolectar las demás.
+                r.falla("alcance", f"{c.ruta}: el único código nuevo es un `tests/test_<tema>.py`")
+        elif _PRUEBA.search(c.ruta):
+            r.falla("alcance", f"{c.ruta}: es una prueba (o un dato de prueba) que ya existía: no cambia ni una línea")
+        elif not any(casa(c.ruta, p) for p in conf.get("permitidos", [])):
+            r.falla("alcance", f"{c.ruta}: fuera de lo que el arreglo puede tocar")
+
+
+def _declarado(r: Resultado, cambios: list[Cambio], cadenas: Cadenas, despues: Path) -> None:
+    """`cadenas.toml` leído como datos antes y después: las secciones fijas, idénticas, y el
+    resultado tiene que cargar con el validador de quien juzga."""
+    from . import cadenas as _cadenas
+    conf = cadenas.reparacion.get("propio") or {}
+    for c in cambios:
+        if c.ruta != "cadenas.toml" or c.despues is None:
+            continue
+        try:
+            a, d = tomllib.loads(c.antes or ""), tomllib.loads(c.despues)
+        except tomllib.TOMLDecodeError as e:
+            r.falla("declarado", f"cadenas.toml: no se puede leer ({e})")
+            continue
+        for seccion in conf.get("secciones_fijas", []):
+            if a.get(seccion) != d.get(seccion):
+                r.falla("declarado", f"cadenas.toml: cambia `{seccion}`, que el arreglo no puede tocar")
+        try:
+            _cadenas.cargar(despues / "cadenas.toml")
+        except Exception as e:  # noqa: BLE001 — lo que el validador no acepta, por lo que sea, no pasa
+            r.falla("declarado", f"cadenas.toml: no carga: {type(e).__name__}: {e}")
 
 
 def _tamano(r: Resultado, cambios: list[Cambio], cadenas: Cadenas) -> None:
@@ -824,6 +895,30 @@ def _lineas(r: Resultado, cambios: list[Cambio]) -> None:
                 r.falla("lineas", f"{c.ruta}: host o URL nuevo `{h[:80]}`")
 
 
+# El código del supervisor corre cada 15 minutos con su token: además de lo anterior, una línea
+# nueva suya no nombra credenciales ni el entorno, no llega a ellos por reflexión, no agrega
+# escrituras a la API ni procesos, y no importa nada (sin módulos nuevos no hay red ni disco nuevos).
+_PROHIBIDO_PROPIO = [
+    ("nombra una credencial", re.compile(r"(?i)token|secret|credencial|passw|cabecera|authorization|bearer")),
+    ("lee el entorno", re.compile(r"\bentorno\b|\bgetenv\b|\benviron\b")),
+    ("usa reflexión", re.compile(r"\b(getattr|setattr|delattr|vars|globals|locals|dir)\s*\(|__\w+__")),
+    ("agrega una escritura o una petición propia", re.compile(
+        r"\.(post|patch|delete|put|pedir|externo|binario|texto)\s*\(|_transporte|\bsubprocess\b|\bos\.\w*(exec|spawn|fork)")),
+    ("importa un módulo", re.compile(r"^\s*(import|from)\s")),
+]
+
+
+def _lineas_propias(r: Resultado, cambios: list[Cambio]) -> None:
+    for c in cambios:
+        if c.despues is None or not c.ruta.endswith(".py") or _PRUEBA.search(c.ruta):
+            continue
+        for linea in c.anadidas:
+            for nombre, patron in _PROHIBIDO_PROPIO:
+                m = patron.search(linea)
+                if m:
+                    r.falla("lineas", f"{c.ruta}: una línea nueva {nombre} (`{m.group(0).strip()}`): `{linea.strip()[:100]}`")
+
+
 # --------------------------------------------------------------------------
 # lint (y lo que el lint sabe de cada invocación)
 # --------------------------------------------------------------------------
@@ -1157,6 +1252,68 @@ def dinamicas(arbol: Path, cambios_rutas: list[str], cadenas: Cadenas, repo: str
     return r
 
 
+_RUTA_DE_PRUEBA = re.compile(r"[A-Za-z0-9_./-]+")
+
+
+def dinamicas_propio(arbol: Path, nuevos: list[str], cadenas: Cadenas, prefijo: list[str] | None = None,
+                     cuales: tuple[str, ...] = DINAMICAS_PROPIAS, lectura: dict | None = None,
+                     trabajo: Path | None = None) -> Resultado:
+    """Las que ejecutan un arreglo al propio supervisor, sobre `arbol` (el arreglo aplicado).
+
+    - pytest: la suite tal como está en main, en una copia sin nada de lo que
+      el arreglo agregó. Así una prueba nueva no puede cambiar, al importarse
+      o al correr antes, lo que miden las que ya existían.
+    - pruebas-nuevas: las pruebas que el arreglo agrega, aparte.
+    - informe: una vuelta real del reconciliador en modo informe (solo lee)
+      con el arreglo, sobre una copia del estado, que tiene que terminar bien.
+      `lectura` es el entorno que se le da: a lo más un token de solo lectura.
+
+    `prefijo` antepone la orden que corre cada cosa con otro usuario; `trabajo`
+    es una carpeta donde ese usuario puede escribir.
+    """
+    r, prefijo = Resultado(), prefijo or []
+    conf = cadenas.reparacion.get("propio") or {}
+    trabajo = Path(trabajo) if trabajo else Path(tempfile.mkdtemp(prefix="propio-"))
+    python = sys.executable if not prefijo else "python3"
+    pruebas = [n for n in nuevos if re.fullmatch(r"tests/test_[A-Za-z0-9_]+\.py", n)]
+    if any(not _RUTA_DE_PRUEBA.fullmatch(n) or ".." in n.split("/") or n.startswith("/") for n in nuevos):
+        r.falla("pytest", "el arreglo agrega un archivo con un nombre que no se puede manejar")
+        return r
+
+    def correr(compuerta: str, orden: list[str], cwd: Path, limite: int, bien=(0,)) -> bool:
+        rc, salida = _ejecutar([*prefijo, *orden], cwd, limite=limite)
+        if rc not in bien:
+            r.falla(compuerta, f"`{' '.join(orden[:6])}` terminó con {rc}: {salida[-400:]}")
+        return rc in bien
+
+    if not correr("pytest", ["mkdir", "-p", "--", str(trabajo)], arbol, 60):
+        return r
+    if "pytest" in cuales:
+        r.corridas.append("pytest")
+        sin_nuevos = trabajo / "sin-nuevos"
+        if (correr("pytest", ["rm", "-rf", "--", str(sin_nuevos)], arbol, 60)
+                and correr("pytest", ["cp", "-R", "--", str(arbol), str(sin_nuevos)], arbol, 120)
+                and (not nuevos or correr("pytest", ["rm", "-f", "--", *nuevos], sin_nuevos, 60))):
+            correr("pytest", [python, "-m", "pytest", "-q", "-p", "no:cacheprovider"], sin_nuevos,
+                   conf.get("pytest_max_s", 900))
+    if "pruebas-nuevas" in cuales and pruebas:
+        r.corridas.append("pruebas-nuevas")
+        correr("pruebas-nuevas", [python, "-m", "pytest", "-q", "-p", "no:cacheprovider", *pruebas], arbol,
+               conf.get("pytest_max_s", 900))
+    if "informe" in cuales:
+        r.corridas.append("informe")
+        estado = trabajo / "estado"
+        entorno = [f"{k}={v}" for k, v in (lectura or {}).items()]
+        if (correr("informe", ["rm", "-rf", "--", str(estado)], arbol, 60)
+                and correr("informe", ["cp", "-R", "--", str(arbol / "estado"), str(estado)], arbol, 60)):
+            orden = [python, "-m", "supervisor", "correr", "--modo", "informe", "--estado", str(estado)]
+            rc, salida = _ejecutar([*prefijo, *entorno, *orden] if prefijo else ["env", *entorno, *orden], arbol,
+                                   limite=conf.get("informe_max_s", 600))
+            if rc != 0:
+                r.falla("informe", f"una vuelta en modo informe con el arreglo terminó con {rc}: {salida[-600:]}")
+    return r
+
+
 # --------------------------------------------------------------------------
 # Entrada
 # --------------------------------------------------------------------------
@@ -1180,18 +1337,24 @@ def evaluar(antes: Path, despues: Path, cambios: list[Cambio], huella: dict, cad
     antes, despues = Path(antes), Path(despues)
     repo = str(huella.get("repo") or "")
     propio = f"{cadenas.org}/{repo}"
+    # El cerco sale del repo, no de lo que diga la huella: el del supervisor es el suyo.
+    propio_ = es_propio(cadenas, repo)
     r = Resultado(corridas=[c for c in ESTATICAS if c in cuales])
     r.archivos = [c.ruta for c in cambios]
     r.lineas = sum(c.lineas for c in cambios)
     if "alcance" in cuales:
-        _alcance(r, cambios, cadenas, repo)
+        if propio_:
+            _alcance_propio(r, cambios, cadenas)
+            _declarado(r, cambios, cadenas, despues)
+        else:
+            _alcance(r, cambios, cadenas, repo)
     try:
         lint_antes = _correr_lint(antes, hermanos, propio)
         lint_despues = _correr_lint(despues, hermanos, propio)
     except Exception as e:  # noqa: BLE001 — un árbol que el lint no puede leer no pasa
         r.falla("lint", f"el lint no pudo leer el árbol: {type(e).__name__}: {e}")
         return r
-    if "alcance" in cuales:
+    if "alcance" in cuales and not propio_:
         if cadenas.reparacion.get("scripts_con_poder", "lista") == "cerrado":
             for ruta in sorted(scripts_con_poder(antes, lint_antes) & {c.ruta for c in cambios}):
                 r.falla("alcance", f"{ruta}: corre en un job con poder y `scripts_con_poder` está en `cerrado`")
@@ -1203,7 +1366,10 @@ def evaluar(antes: Path, despues: Path, cambios: list[Cambio], huella: dict, cad
         _poder(r, cambios, cadenas, repo, antes, lint_antes, lint_despues, huella)
     if "lineas" in cuales:
         _lineas(r, cambios)
-    if "contenido" in cuales:
+        if propio_:
+            _lineas_propias(r, cambios)
+    # En el supervisor todo lo que el cerco deja tocar es parte de lo que corre la vuelta.
+    if "contenido" in cuales and not propio_:
         _contenido(r, cambios, cadenas, repo, huella, antes, lint_antes)
     if "worker" in cuales:
         _worker(r, cambios, cadenas, repo, antes, despues)

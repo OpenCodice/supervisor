@@ -183,7 +183,7 @@ es confiable. El diseño supone que al agente se le puede engañar y lo contiene
    paso comprueba, con el usuario del agente, que no puede leer su entorno ni su memoria; si no se puede
    garantizar, el agente no corre. Entrega su cambio en el árbol de trabajo (sus commits no cuentan) y
    un `veredicto.json`: `arreglo`, `no-es-infra` o `no-puedo`.
-3. `compuertas` (sin ningún secreto): la entrega son datos, un tar con lo que cambió. Se pone sobre un
+3. `compuertas` (sin ningún secreto; el token del job solo lee): la entrega son datos, un tar con lo que cambió. Se pone sobre un
    clon limpio del commit de partida y de ahí sale `arreglo.patch`. Primero las compuertas que solo
    leen; al final, con otro usuario y sobre una copia, las que ejecutan código del arreglo (`pytest`,
    `node --test`, `wrangler deploy --dry-run`).
@@ -209,7 +209,8 @@ ensayo a mano no depende de él.
 
 **Topes**: 2 intentos por huella (caducan a los 28 días, o empiezan de cero al revivir), 3 sesiones al
 día, una sola `reparar-infra` a la vez. Una huella fuera del alcance (este repo, las webs, los repos de datos) queda `agotada` sin
-gastar sesión. El supervisor no se repara a sí mismo.
+gastar sesión. A este repo no llega por una huella: tiene su propio modo (ver «Reparar al propio
+supervisor»).
 
 **Revivir** (`politica._agotar_agente`). Una huella que agotó al agente (sus intentos, tres sesiones
 que no llegaron a empezar, o el agente la devolvió) no queda así para siempre: mientras siga
@@ -292,6 +293,74 @@ gh workflow run reparar-infra.yml -R OpenCodice/supervisor -f ensayo=true \
 `revertido` → otra sesión o `agotada` (→ `abierta` otra vez si revive). `reparar-infra.yml` anota en `acciones.jsonl`
 `intento-iniciado`, `arreglo-publicado` (repo, commit, archivos, prueba), `descartado` (motivo),
 `revertido` y `reversion-fallida`.
+
+## Reparar al propio supervisor
+
+Si `supervisor.yml` truena (un error en este código o en su workflow), el reconciliador no corre y no
+puede observarse: nadie más lanza nada. Lo detecta el Worker `scheduler`, que es quien lo lanza: cuando
+las últimas 3 corridas terminadas de `supervisor.yml` fallaron, lanza
+
+```
+reparar-infra.yml  huella=supervisor  repo=supervisor  workflow=supervisor.yml
+                   corrida=<id de la última corrida fallida>  origen=scheduler
+```
+
+`huella=supervisor` (`reparar.PROPIA`) es el modo. Mismo flujo y mismos jobs que arriba, con estas
+diferencias (todas porque, roto, el supervisor no puede vigilar nada ni leer o escribir `estado/`):
+
+- **`preparar` no lee `estado/`.** La huella (job, paso, firma) sale de la corrida indicada, por la API
+  y con el token del job (el del supervisor puede ser lo que falla): `reparar.registro_propio`. Sin
+  gastar agente y dejando constancia, termina bien (`SinTrabajo`, salida `seguir=false`) si
+  `supervisor.yml` ya volvió a correr bien, si ya hubo `max_por_dia` (2) corridas de este modo en 24 h
+  (se cuentan por el título `huella=[supervisor]` de las corridas de `reparar-infra.yml`; los ensayos no
+  cuentan; el Worker limita además por su lado), o si la falla es de una credencial o pasajera. No se
+  anota `intento-iniciado`.
+- **Quién juzga.** Las compuertas, el encargo y lo que publica y revierte salen del código de main de
+  esta corrida, nunca del árbol que entrega el agente. Si el código de main ni siquiera se deja
+  importar (eso mismo puede ser la falla), el paso «Código con el que se juzga» toma el del commit de
+  la última corrida buena de `supervisor.yml`, comprobando que es un antepasado de main, y todos los
+  jobs siguientes hacen checkout de ese commit (`needs.preparar.outputs.codigo`).
+- **Cerco** (`[reparacion.propio]`; `compuertas._alcance_propio`): puede modificar `supervisor/*.py`,
+  `.github/workflows/supervisor.yml` y `cadenas.toml`, y crear `tests/test_<tema>.py` y datos en
+  `tests/fixtures/`. No puede tocar lo que juzga un arreglo: `supervisor/compuertas.py`, `reparar.py`,
+  `lint_workflows.py`, `rutas.py`, `cadenas.py`, `reparar-infra.yml`, `tests.yml`, `scripts/**`,
+  `estado/**`. **Ninguna prueba ni dato de prueba que ya exista cambia**, ni una línea ni agregándole
+  al final (una función con el mismo nombre tapa a la anterior, y un `conftest.py` cambia a todas);
+  tampoco se crea un `conftest.py` ni un `.py` que no sea `tests/test_<tema>.py`. Nada se borra. Mismo
+  tope de archivos y líneas.
+- **`cadenas.toml`** (`compuertas._declarado`): leído como datos antes y después, `secciones_fijas`
+  (`general`, `estado`, `invariantes`, `reparacion`, `credenciales`) quedan idénticas, y el resultado
+  tiene que cargar con el validador de quien juzga. Apagar un invariante no es un arreglo.
+- **`supervisor.yml`**: las mismas reglas de `poder` que cualquier workflow. Su único job tiene poder,
+  así que en la práctica solo admite comillas, comentarios, `set -e…` y `mkdir -p`.
+- **Líneas** (`compuertas._lineas_propias`, además de la lista de siempre): una línea nueva de
+  `supervisor/*.py` no importa nada (`import`, `from … import`), no nombra tokens, secretos,
+  credenciales ni cabeceras, no lee el entorno, no usa reflexión (`getattr`, `vars`, `__x__`) y no
+  agrega escrituras ni peticiones propias (`.post(`, `.patch(`, `.delete(`, `.pedir(`, `subprocess`).
+  Ese código corre cada 15 minutos con `SUPERVISOR_TOKEN`.
+- **Lo que ejecuta el arreglo** (`compuertas.dinamicas_propio`; con otro usuario, sin secretos): (1) la
+  suite tal como está en main, en una copia **sin nada de lo que el arreglo agregó**, para que una
+  prueba nueva no pueda cambiar lo que miden las viejas; (2) sus pruebas nuevas, aparte; (3) **una
+  vuelta real en modo informe** con el arreglo, sobre una copia de `estado/`, que tiene que terminar
+  bien. Para esa vuelta, y solo para ella, recibe el token del job `compuertas`, que solo lee
+  (`actions: read`, `contents: read`): el modo informe solo hace GET y escribe en la carpeta de
+  `--estado`. Lo que ese token no alcance a ver sale `sin-observar`, no falla.
+- **Después de publicar** (`reparar.publicar_propio`): el commit va a main de este repo con la autoría
+  de siempre, se lanza `supervisor.yml` (`origen=reparar-infra`) y el job **`verificar`** espera la
+  primera corrida terminada de `supervisor.yml` que ya trae el commit (`reparar.prueba_propia`; una
+  cancelada no cuenta). Si termina bien, cierra la constancia. Si falla, o ninguna termina en
+  `verificar_max_min` (40), hace `git revert` del commit (solo de uno con la autoría y el título de
+  este flujo). No pasa por `acciones.jsonl` ni por `politica._vigilar`.
+- **Constancia**: un solo issue `[supervisor] El supervisor no corre: reparación automática`, con un
+  comentario por cada final (sin reparación, descartado, publicado, resuelto, revertido, no se pudo
+  revertir); se cierra al resolverse.
+
+Un ensayo sirve igual: `-f huella=supervisor -f ensayo=true -f repo=supervisor -f workflow=supervisor.yml
+-f corrida=<id>` (y `-f base=<sha>` para reproducir una falla ya arreglada) hace todo y no publica.
+
+Lo que este modo no cubre: una falla que solo aparece al actuar (la vuelta de prueba es en modo
+informe; ahí la red es el revert), un arreglo que necesite tocar lo prohibido o un `import` nuevo, y
+una falla de `reparar-infra.yml` mismo (I11 deja constancia; no se repara a sí mismo).
 
 ## Probar
 

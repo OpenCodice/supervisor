@@ -104,7 +104,11 @@ entra:
    revierte solo**.
 
 El agente solo puede tocar workflows y scripts de orquestación de los tres extractores, nunca el
-extractor, las compuertas de fidelidad, los repos de datos ni este repo. Dos intentos por huella y tres
+extractor, las compuertas de fidelidad ni los repos de datos. A este repo solo llega por un modo
+aparte: si `supervisor.yml` falla tres veces seguidas, el Worker `scheduler` lanza `reparar-infra.yml
+-f huella=supervisor`, que repara al propio supervisor sin depender de su estado, con un cerco más
+estrecho (no toca las compuertas, este flujo ni ninguna prueba existente), una vuelta de prueba en
+modo informe y un job final que revierte el arreglo si la siguiente corrida vuelve a fallar. Dos intentos por huella y tres
 sesiones al día; lo que no se pueda arreglar así queda `agotada` con su motivo en un issue, y vuelve al
 agente sola si la falla sigue y cambia el workflow, sus scripts o las compuertas, o a los siete días
 (hasta tres veces). Para

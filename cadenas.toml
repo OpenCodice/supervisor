@@ -396,13 +396,15 @@ max_min = 30
 
 # El agente de infraestructura. Se declara para que la regla del único lanzador
 # vea su lugar de espera; I4 cancela una corrida colgada e I11 deja constancia
-# si lleva tres en rojo (no se repara a sí mismo).
+# si lleva tres en rojo (este workflow no se repara a sí mismo).
 [[workflows]]
 repo = "supervisor"
 archivo = "reparar-infra.yml"
 grupo = "reparar-infra"
 solo_grupo = true
-max_min = 240
+# La suma de los límites de sus jobs, con el que espera la corrida de prueba al
+# reparar al propio supervisor.
+max_min = 300
 
 # ---------------------------------------------------------------------------
 # Repos de datos. `main` de cada uno entra en I8; sus PR automáticos, en I5.
@@ -510,7 +512,8 @@ guardar = "gh secret set CONGRESO_ARCHIVO_TOKEN -R OpenCodice/supervisor"
 # Reparación de infraestructura con un agente (reparar-infra.yml).
 #
 # Una huella determinista cuyo repo no está en `repos` queda `agotada` sin
-# gastar sesión: ni este repo, ni las webs, ni los repos de datos.
+# gastar sesión: ni este repo (que tiene su propio modo, `[reparacion.propio]`),
+# ni las webs, ni los repos de datos.
 # Las rutas son globs: `*` no cruza `/`, `**` sí.
 #
 # permitidos  lo que el arreglo puede modificar (archivos que ya existen).
@@ -575,6 +578,40 @@ prohibidos = [
   "scripts/agente/compuertas_reparar.py",
   "scripts/agente/proxy_mx.py",
 ]
+
+# El propio supervisor (reparar-infra.yml con `huella=supervisor`). Lo lanza el
+# Worker scheduler cuando supervisor.yml lleva tres corridas fallidas: roto, el
+# reconciliador no puede observarse ni leer su estado, así que este modo no
+# depende de `estado/` y sus topes se cuentan en la API.
+#
+# workflow          el que se repara y con el que se comprueba el arreglo.
+# max_por_dia       corridas de este modo en 24 h (por el título de la corrida).
+# verificar_max_min minutos que se espera la siguiente corrida del workflow
+#                   tras publicar; si falla o no termina, el arreglo se revierte.
+# informe_max_s     segundos de la vuelta de prueba en modo informe.
+# permitidos, nuevos, prohibidos   como arriba. Ninguna prueba ni dato de
+#                   prueba que ya exista cambia; lo que juzga un arreglo (las
+#                   compuertas, este flujo, los encargos) no se toca.
+# secciones_fijas   tablas de este archivo que un arreglo no puede cambiar.
+[reparacion.propio]
+workflow = "supervisor.yml"
+max_por_dia = 2
+verificar_max_min = 40
+informe_max_s = 600
+permitidos = ["supervisor/*.py", ".github/workflows/supervisor.yml", "cadenas.toml"]
+nuevos = ["tests/test_*.py", "tests/fixtures/**"]
+prohibidos = [
+  "supervisor/compuertas.py",
+  "supervisor/reparar.py",
+  "supervisor/lint_workflows.py",
+  "supervisor/rutas.py",
+  "supervisor/cadenas.py",
+  ".github/workflows/reparar-infra.yml",
+  ".github/workflows/tests.yml",
+  "scripts/**",
+  "estado/**",
+]
+secciones_fijas = ["general", "estado", "invariantes", "reparacion", "credenciales"]
 
 [[reparacion.repos]]
 nombre = "constitucion-extractor"

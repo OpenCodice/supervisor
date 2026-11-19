@@ -401,7 +401,8 @@ def salud_de(cliente: Cliente, worker: dict, entorno) -> dict:
 # --------------------------------------------------------------------------
 
 # Lo que decide si un arreglo entra y lo que se le encarga al agente.
-_DE_LA_REPARACION = ("supervisor/compuertas.py", "supervisor/reparar.py", "supervisor/lint_workflows.py")
+_DE_LA_REPARACION = ("supervisor/compuertas.py", "supervisor/reparar.py", "supervisor/lint_workflows.py",
+                     "supervisor/rutas.py")
 
 
 def version_de_reparacion(cadenas: Cadenas, raiz: Path | None = None) -> str:
