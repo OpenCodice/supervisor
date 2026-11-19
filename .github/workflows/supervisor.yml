@@ -54,9 +54,10 @@ jobs:
       - name: Observar, evaluar y actuar
         env:
           GITHUB_TOKEN: ${{ secrets.SUPERVISOR_TOKEN || github.token }}
-          # Para leer GET /salud del Worker congreso-archivo (I10). Sin el
-          # secret, I10 sale «sin-observar».
+          # Para leer GET /salud de los Workers congreso-archivo y egress-mx
+          # (I10). Sin su secret, I10 sale «sin-observar» para ese Worker.
           CONGRESO_ARCHIVO_TOKEN: ${{ secrets.CONGRESO_ARCHIVO_TOKEN }}
+          EGRESS_MX_TOKEN: ${{ secrets.EGRESS_MX_TOKEN }}
         run: |
           modo=informe
           if [ "$ACTUA" = true ] && [ "$MODO" != informe ]; then modo=actuar; fi

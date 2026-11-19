@@ -287,12 +287,33 @@ def test_salud_del_worker_con_su_token_y_sin_el(cadenas):
     assert sin == {"observable": False, "motivo": "falta CONGRESO_ARCHIVO_TOKEN en el entorno"} and len(red.pedidos) == 1
     negado = salud_de(Cliente("t", transporte=Red([("/salud", (401, {}, b"no autorizado\n"))])), worker, {"CONGRESO_ARCHIVO_TOKEN": "x"})
     assert negado == {"observable": False, "motivo": "GET /salud: HTTP 401", "rechazo": 401}
+    # Con el token y sin un /salud que se deje leer: además de no verse, se dice que no contesta.
     caido = salud_de(Cliente("t", transporte=Red([("/salud", (503, {}, b""))])), worker, {"CONGRESO_ARCHIVO_TOKEN": "x"})
-    assert caido == {"observable": False, "motivo": "GET /salud: HTTP 503"}
+    assert caido == {"observable": False, "motivo": "GET /salud: HTTP 503", "sin_salud": True}
+    otra_forma = salud_de(Cliente("t", transporte=Red([("/salud", (200, {}, {"ok": True}))])), worker, {"CONGRESO_ARCHIVO_TOKEN": "x"})
+    assert otra_forma == {"observable": False, "motivo": "GET /salud: KeyError", "sin_salud": True}
 
     def caida(*_):
         raise OSError("sin red")
-    assert salud_de(Cliente("t", transporte=caida), worker, {"CONGRESO_ARCHIVO_TOKEN": "x"})["observable"] is False
+    assert salud_de(Cliente("t", transporte=caida), worker, {"CONGRESO_ARCHIVO_TOKEN": "x"}) == {
+        "observable": False, "motivo": "GET /salud: OSError", "sin_salud": True}
+
+
+def test_salud_del_worker_que_sale_desde_mexico(cadenas):
+    worker = next(w for w in cadenas.workers if w["nombre"] == "egress-mx")
+    assert (worker["forma"], worker["pais"], worker["token_env"]) == ("salida", "MX", "EGRESS_MX_TOKEN")
+    cuerpo = {"ok": True, "permitidos": 12, "lista_leida": True, "colo": "MEX", "pais": "MX", "colo_entrada": "IAD"}
+    red = Red([("egress-mx.danielcardeenas.workers.dev/salud", (200, {}, cuerpo))])
+    leido = salud_de(Cliente("token-de-github", transporte=red), worker, {"EGRESS_MX_TOKEN": "del-worker"})
+    assert leido == {"observable": True, "salida": {"ok": True, "permitidos": 12, "lista_leida": True, "colo": "MEX", "pais": "MX"}}
+    metodo, url, cabeceras, _ = red.pedidos[0]
+    assert (metodo, url, cabeceras["Authorization"]) == ("GET", worker["salud"], "Bearer del-worker")
+    # Mientras la versión desplegada no tenga /salud contesta 404: no se ve, y se dice que no contesta.
+    sin = salud_de(Cliente("t", transporte=Red([("/salud", (404, {}, b"no encontrado\n"))])), worker, {"EGRESS_MX_TOKEN": "x"})
+    assert sin == {"observable": False, "motivo": "GET /salud: HTTP 404", "sin_salud": True}
+    lista = salud_de(Cliente("t", transporte=Red([("/salud", (200, {}, [1, 2]))])), worker, {"EGRESS_MX_TOKEN": "x"})
+    assert lista == {"observable": False, "motivo": "GET /salud: AttributeError", "sin_salud": True}
+    assert salud_de(Cliente("t", transporte=red), worker, {}) == {"observable": False, "motivo": "falta EGRESS_MX_TOKEN en el entorno"}
 
 
 def test_la_foto_lleva_la_salud_solo_con_i10_encendida(cadenas, tmp_path):

@@ -77,6 +77,11 @@ relojes_max_h = 3
 tolerancia_horario_min = 180
 # Horas que un sitio de un Worker puede tener pendientes sin bajar nada (I10).
 worker_pendiente_max_h = 6
+# Horas seguidas que un Worker puede pasar sin contestar su /salud (o diciendo
+# que no está sano, o que sale desde otro país) antes de dejar constancia: un
+# despliegue, o un /salud que todavía no existe en la versión desplegada, no
+# son un defecto. Mientras tanto I10 sale rota en el latido, sin issue.
+worker_sin_salud_max_h = 6
 # Días antes del vencimiento de una credencial en que I13 empieza a avisar, y
 # cada cuántos días repite el aviso en su issue mientras nadie la renueve.
 aviso_vencimiento_dias = 30
@@ -467,9 +472,15 @@ repo = "constitucion-web"
 archivo = "deploy.yml"
 
 # ---------------------------------------------------------------------------
-# Workers de Cloudflare con trabajo en cola (I10). `salud` responde, por sitio,
-# cuántas páginas tiene pendientes, desde cuándo y cuándo bajó la última. El
-# token se lee del entorno (`token_env`); sin él, I10 queda sin observar.
+# Workers de Cloudflare (I10). Cada uno contesta `GET salud` con su token, que
+# se lee del entorno (`token_env`); sin él, I10 queda sin observar.
+#
+# forma   cómo se lee lo que contesta:
+#         "cola" (por omisión): por sitio, cuántas páginas tiene pendientes,
+#           desde cuándo y cuándo bajó la última.
+#         "salida": `{"ok": true, "pais": "MX", "colo": …}`: está bien y dice
+#           desde qué país sale.
+# pais    con forma "salida": el país desde el que tiene que salir.
 # ---------------------------------------------------------------------------
 
 [[workers]]
@@ -477,6 +488,17 @@ nombre = "congreso-archivo"
 repo = "congreso-extractor"
 salud = "https://congreso-archivo.danielcardeenas.workers.dev/salud"
 token_env = "CONGRESO_ARCHIVO_TOKEN"
+forma = "cola"
+
+# Descarga desde México las fuentes que rechazan conexiones de fuera. Si deja
+# de salir desde México no sirve, aunque conteste.
+[[workers]]
+nombre = "egress-mx"
+repo = "constitucion-extractor"
+salud = "https://egress-mx.danielcardeenas.workers.dev/salud"
+token_env = "EGRESS_MX_TOKEN"
+forma = "salida"
+pais = "MX"
 
 # ---------------------------------------------------------------------------
 # Credenciales que el supervisor usa en cada vuelta (I13). No las renueva: deja
@@ -507,6 +529,12 @@ nombre = "CONGRESO_ARCHIVO_TOKEN"
 que = "Token compartido con el Worker `congreso-archivo` (su secret `TOKEN`). El supervisor lee con él `GET /salud` (I10); `congreso-extractor` lo usa para pedir y leer páginas."
 necesita = "El mismo valor en los tres lugares: el secret `TOKEN` del Worker (`npx wrangler secret put TOKEN` en `congreso-extractor/archivo/`) y el secret `CONGRESO_ARCHIVO_TOKEN` de los repos `congreso-extractor` y `supervisor`."
 guardar = "gh secret set CONGRESO_ARCHIVO_TOKEN -R OpenCodice/supervisor"
+
+[[credenciales]]
+nombre = "EGRESS_MX_TOKEN"
+que = "Token compartido con el Worker `egress-mx` (su secret `TOKEN`), secret de la organización. El supervisor lee con él `GET /salud` (I10); las vigilancias lo usan para descargar desde México las fuentes que rechazan conexiones de fuera."
+necesita = "El mismo valor en los dos lugares: el secret `TOKEN` del Worker (`npx wrangler secret put TOKEN` en `constitucion-extractor/egress-mx/`) y el secret `EGRESS_MX_TOKEN` de la organización OpenCodice, visible para sus repositorios."
+guardar = "gh secret set EGRESS_MX_TOKEN --org OpenCodice --visibility all"
 
 # ---------------------------------------------------------------------------
 # Reparación de infraestructura con un agente (reparar-infra.yml).

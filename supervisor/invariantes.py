@@ -756,12 +756,38 @@ def i9(foto: dict, cadenas: Cadenas, ahora: datetime) -> list[Hallazgo]:
 
 
 def i10(foto: dict, cadenas: Cadenas, ahora: datetime) -> list[Hallazgo]:
-    """Un sitio de un Worker con pendientes viejas y sin un éxito reciente está atorado."""
+    """Cada Worker contesta su /salud y, según su `forma`, hace su trabajo: con cola (`cola`), ningún
+    sitio tiene pendientes viejas sin un éxito reciente; el que descarga por otros (`salida`) dice
+    que está bien y que sale desde el país declarado."""
     hallazgos = []
     limite = timedelta(hours=cadenas.politica.get("worker_pendiente_max_h", 6))
+    tolerancia = cadenas.politica.get("worker_sin_salud_max_h", 6)
+
+    def del_worker(worker: dict, que: str, motivo: str, constancia: str) -> None:
+        # Sin `cuando`: la política cuenta la tolerancia desde la primera vuelta que lo vio así.
+        hallazgos.append(Hallazgo(
+            invariante="I10", repo=worker.get("repo") or worker["nombre"], workflow=None,
+            objeto=f"{worker['nombre']}/{que}", motivo=motivo, relanzable=False, base=que,
+            extra={"worker": worker["nombre"], "espera_h": tolerancia, "constancia_motivo": constancia}))
+
     for worker in cadenas.workers:
-        leido = foto.get("workers", {}).get(worker["nombre"]) or {}
+        nombre = worker["nombre"]
+        leido = foto.get("workers", {}).get(nombre) or {}
+        if leido.get("sin_salud"):
+            del_worker(worker, "salud", f"el Worker {nombre} no contesta su /salud ({leido.get('motivo')})",
+                       "el Worker no contesta su /salud: está caído, o ese /salud no está desplegado")
+            continue
         if not leido.get("observable"):
+            continue
+        if worker.get("forma", "cola") == "salida":
+            salida, pais = leido.get("salida") or {}, worker.get("pais")
+            if salida.get("ok") is not True:
+                del_worker(worker, "ok", f"el /salud del Worker {nombre} no dice `ok`", "el Worker dice que no está sano")
+            elif pais and salida.get("pais") != pais:
+                desde = (f"el centro de datos {salida['colo']}" if salida.get("colo")
+                         else "un centro de datos que no se pudo saber")
+                del_worker(worker, "pais", f"el Worker {nombre} sale desde {desde}, no desde {pais}",
+                           f"el Worker ya no sale desde {pais}: las fuentes que rechazan conexiones de fuera no le contestan")
             continue
         for host, sitio in sorted(leido.get("sitios", {}).items()):
             antigua, exito = instante(sitio.get("pendiente_mas_antigua")), instante(sitio.get("ultimo_exito"))

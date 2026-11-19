@@ -376,24 +376,29 @@ def _peticiones(cliente: Cliente, cadenas: Cadenas, foto: dict, repo: str, desde
 # --------------------------------------------------------------------------
 
 _CAMPOS_SITIO = ("pendientes", "pendiente_mas_antigua", "ultimo_exito", "en_espera_hasta", "bloqueos_seguidos")
+_CAMPOS_SALIDA = ("ok", "permitidos", "lista_leida", "colo", "pais")
 
 
 def salud_de(cliente: Cliente, worker: dict, entorno) -> dict:
-    """`GET /salud` de un Worker. Sin su token, o si no responde, queda sin observar (no «sano»)."""
+    """`GET /salud` de un Worker, leído según su `forma`. Sin su token queda sin observar (no «sano»);
+    con él, si el Worker no contesta un /salud que se deje leer, además se dice (`sin_salud`)."""
     token = (entorno.get(worker["token_env"]) or "").strip()
     if not token:
         return {"observable": False, "motivo": f"falta {worker['token_env']} en el entorno"}
     try:
         estado, contenido = cliente.externo(worker["salud"], token)
+        if estado in (401, 403):
+            # Es el token: rotado en el Worker y no aquí, o al revés (I13).
+            return {"observable": False, "motivo": f"GET /salud: HTTP {estado}", "rechazo": estado}
         if estado != 200:
-            # Un 401/403 es el token: rotado en el Worker y no aquí, o al revés (I13).
-            return {"observable": False, "motivo": f"GET /salud: HTTP {estado}"} | (
-                {"rechazo": estado} if estado in (401, 403) else {})
-        sitios = json.loads(contenido)["sitios"]
+            return {"observable": False, "motivo": f"GET /salud: HTTP {estado}", "sin_salud": True}
+        datos = json.loads(contenido)
+        if worker.get("forma", "cola") == "salida":
+            return {"observable": True, "salida": {k: datos.get(k) for k in _CAMPOS_SALIDA}}
         return {"observable": True,
-                "sitios": {host: {k: s.get(k) for k in _CAMPOS_SITIO} for host, s in sitios.items()}}
+                "sitios": {host: {k: s.get(k) for k in _CAMPOS_SITIO} for host, s in datos["sitios"].items()}}
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as e:
-        return {"observable": False, "motivo": f"GET /salud: {type(e).__name__}"}
+        return {"observable": False, "motivo": f"GET /salud: {type(e).__name__}", "sin_salud": True}
 
 
 # --------------------------------------------------------------------------

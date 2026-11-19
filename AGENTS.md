@@ -102,10 +102,19 @@ respaldo. El contexto del proyecto está en el `AGENTS.md` de la raíz del espac
   dueño (I2).
 - **I7** (extractor nuevo ⇒ vigilancia) queda apagada: quien publica un arreglo del extractor pide su
   vigilancia con los inputs justos.
-- **I10.** `GET /salud` de cada `[[workers]]`, con el token del entorno (`CONGRESO_ARCHIVO_TOKEN`, que
-  `supervisor.yml` pasa si el secret existe; si el Worker lo rechaza, es un hallazgo de I13). Un sitio con pendientes cuya más antigua pasa de
-  `worker_pendiente_max_h` y sin un éxito en ese tiempo es un hallazgo `determinista`, con huella por
-  sitio: constancia en un issue. Sin el token, I10 sale `sin-observar`.
+- **I10.** `GET /salud` de cada `[[workers]]`, con el token de su `token_env` (`supervisor.yml` pasa
+  `CONGRESO_ARCHIVO_TOKEN` y `EGRESS_MX_TOKEN` si existen; sin el token, I10 sale `sin-observar` para
+  ese Worker; si el Worker lo rechaza, es un hallazgo de I13). Lo que contesta se lee según su `forma`
+  (`observar.salud_de`): `cola` (`congreso-archivo`), por sitio, con hallazgo `determinista` y huella
+  por sitio si tiene pendientes cuya más antigua pasa de `worker_pendiente_max_h` y ningún éxito en
+  ese tiempo; `salida` (`egress-mx`), `{"ok": true, "pais": "MX", "colo": …}`, con hallazgo si no dice
+  `ok` o si `pais` no es el declarado (un Worker que dejó de salir desde México no sirve aunque
+  conteste). Con el token y sin un `/salud` legible (404, 5xx, sin red, otra forma) el hallazgo es
+  `<worker>/salud`. Estos tres hallazgos del Worker entero llevan tolerancia: la política
+  (`politica._worker`) espera `worker_sin_salud_max_h` (6) seguidas, contadas desde que la huella se
+  abrió, antes de dejar constancia en un issue; si entre tanto contesta bien, la huella se resuelve
+  sin rastro y la cuenta empieza de cero. Así un despliegue, o un `/salud` que la versión desplegada
+  todavía no tiene (404), no abre un issue; mientras espera, el latido dice `rota`, no `ok`.
 - **I13.** Las credenciales de `[[credenciales]]`. La del propio supervisor (`uso = "github"`): `Cliente`
   guarda la cabecera `github-authentication-token-expiration` de la primera respuesta que la API acepta
   (ninguna llamada de más; sin cabecera, el token no vence) y `tomar_foto` la deja en
@@ -113,7 +122,7 @@ respaldo. El contexto del proyecto está en el `AGENTS.md` de la raíz del espac
   `acciones.jsonl`, la última acción de cada clase sobre cada repo si fue un 401/403
   (`invariantes.rechazos_de_acciones`; `rechazo_vigente_h`). Hallazgos, uno por credencial y problema
   (`SUPERVISOR_TOKEN`, `SUPERVISOR_TOKEN/permisos`, `SUPERVISOR_TOKEN/ausente`,
-  `CONGRESO_ARCHIVO_TOKEN@congreso-archivo`), de clase `credencial`: solo constancia en un issue
+  `CONGRESO_ARCHIVO_TOKEN@congreso-archivo`, `EGRESS_MX_TOKEN@egress-mx`), de clase `credencial`: solo constancia en un issue
   (`politica._credencial`), con el texto de `[[credenciales]]`, repetida cada `aviso_repeticion_dias`;
   nunca un lanzamiento ni el agente. La base del de vencimiento es la fecha: otra fecha dentro del
   umbral vuelve a avisar, y una lejana (o ninguna) lo resuelve y cierra el issue. Solo una vuelta con el

@@ -239,6 +239,8 @@ def validar(c: Cadenas) -> None:
                 raise ValueError(f"cadenas.toml: un Worker no declara `{clave}`")
         if not str(worker["salud"]).startswith("https://"):
             raise ValueError(f"cadenas.toml: {worker['nombre']}: `salud` tiene que ser una URL https")
+        if worker.get("forma", "cola") not in ("cola", "salida"):
+            raise ValueError(f"cadenas.toml: {worker['nombre']}: `forma` es `cola` o `salida`")
     for cred in c.credenciales:
         for clave in ("nombre", "que", "necesita", "guardar"):
             if not cred.get(clave):

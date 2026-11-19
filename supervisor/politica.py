@@ -759,6 +759,22 @@ def _credencial(v: _Vuelta, d: Decision) -> Decision:
     return d
 
 
+def _worker(v: _Vuelta, d: Decision) -> Decision:
+    """I10: constancia en un issue. Lo que puede ser pasajero (un Worker que no contesta mientras se
+    despliega, una lectura que no salió) espera su tolerancia, contada desde que se vio por primera vez."""
+    h = d.hallazgo
+    espera = h.extra.get("espera_h")
+    if espera and d.registro["estado"] != "agotada":
+        listo = instante(d.registro["primera"]) + timedelta(hours=espera)
+        if v.ahora < listo:
+            d.accion, d.motivo, d.proxima = "esperar", f"se le dan {espera:g} h antes de dejar constancia", iso(listo)
+            return d
+    # El motivo de la constancia no lleva las cuentas del sitio, que cambian en cada vuelta.
+    return _agotar(d, h.extra.get("constancia_motivo") or (
+        "el sitio no avanza en el Worker: es un defecto del Worker, no la falla de una corrida, "
+        "y el agente de infraestructura no lo toma"))
+
+
 def _se_ve(foto: dict, reg: dict) -> bool:
     """¿La foto alcanza a ver el repo de esta huella? Lo que no se ve no se da por resuelto."""
     repo = reg.get("repo")
@@ -772,8 +788,9 @@ def _se_ve(foto: dict, reg: dict) -> bool:
     if reg.get("invariante") == "I5":
         return repo in foto.get("datos", {})
     if reg.get("invariante") == "I10":
-        worker = (reg.get("objeto") or "").split("/")[0]
-        return bool((foto.get("workers", {}).get(worker) or {}).get("observable"))
+        # Un Worker que dejó de contestar se dio por visto (y con hallazgo); sin su token, no se sabe.
+        leido = foto.get("workers", {}).get((reg.get("objeto") or "").split("/")[0]) or {}
+        return bool(leido.get("observable") or leido.get("sin_salud"))
     return inv.observable(foto, repo)
 
 
@@ -835,9 +852,7 @@ def _tratar(v: _Vuelta, h: Hallazgo, decisiones: list[Decision]) -> Decision:
     elif h.invariante == "I9":
         _agotar(d, h.motivo)
     elif h.invariante == "I10":
-        # El motivo de la constancia no lleva las cuentas del sitio, que cambian en cada vuelta.
-        _agotar(d, "el sitio no avanza en el Worker: es un defecto del Worker, no la falla de una corrida, "
-                   "y el agente de infraestructura no lo toma")
+        _worker(v, d)
     elif h.invariante == "I13":
         _credencial(v, d)
     elif h.extra.get("rechazada"):

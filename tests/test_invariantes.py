@@ -487,7 +487,43 @@ def test_i10_un_sitio_con_pendientes_viejas_y_sin_exito_reciente(cadenas, foto_s
     foto["workers"] = {"congreso-archivo": {"observable": False, "motivo": "falta CONGRESO_ARCHIVO_TOKEN en el entorno"}}
     foto["motivos"] = {"congreso-archivo": "falta CONGRESO_ARCHIVO_TOKEN en el entorno"}
     assert inv.i10(foto, cadenas, AHORA) == []
-    assert inv.sin_observar(foto, cadenas)["I10"] == "congreso-archivo: falta CONGRESO_ARCHIVO_TOKEN en el entorno"
+    assert inv.sin_observar(foto, cadenas)["I10"] == (
+        "congreso-archivo: falta CONGRESO_ARCHIVO_TOKEN en el entorno; egress-mx: sin acceso")
+
+
+def _salida(**cambios):
+    return {"observable": True, "salida": {"ok": True, "permitidos": 12, "lista_leida": True, "colo": "MEX", "pais": "MX"} | cambios}
+
+
+def test_i10_el_worker_que_descarga_desde_mexico_tiene_que_salir_desde_mexico(cadenas, foto_sana):
+    foto = foto_sana()
+    foto["workers"] = {"egress-mx": _salida()}
+    assert inv.i10(foto, cadenas, AHORA) == []
+    # Contesta, pero desde otro país (o no se pudo saber desde dónde): no sirve.
+    for cambios, donde in (({"colo": "IAD", "pais": None}, "el centro de datos IAD"),
+                           ({"colo": None, "pais": None}, "un centro de datos que no se pudo saber")):
+        foto["workers"] = {"egress-mx": _salida(**cambios)}
+        [h] = inv.i10(foto, cadenas, AHORA)
+        assert (h.objeto, h.base, h.repo) == ("egress-mx/pais", "pais", "constitucion-extractor")
+        assert donde in h.motivo and "no desde MX" in h.motivo and h.extra["espera_h"] == 6 and h.cuando is None
+    foto["workers"] = {"egress-mx": _salida(ok=False)}
+    assert [h.objeto for h in inv.i10(foto, cadenas, AHORA)] == ["egress-mx/ok"]
+
+
+def test_i10_un_worker_que_no_contesta_su_salud_es_un_hallazgo_con_tolerancia(cadenas, foto_sana):
+    foto = foto_sana()
+    foto["workers"] = {"egress-mx": {"observable": False, "motivo": "GET /salud: HTTP 404", "sin_salud": True},
+                       "congreso-archivo": {"observable": False, "motivo": "GET /salud: OSError", "sin_salud": True}}
+    hallazgos = inv.i10(foto, cadenas, AHORA)
+    assert [h.objeto for h in hallazgos] == ["congreso-archivo/salud", "egress-mx/salud"]
+    assert "HTTP 404" in hallazgos[1].motivo and all(h.extra["espera_h"] == 6 and not h.relanzable for h in hallazgos)
+    # El motivo de la constancia no lleva el código, que puede cambiar de una vuelta a otra.
+    assert "404" not in hallazgos[1].extra["constancia_motivo"]
+    # Un token rechazado o ausente no es esto: lo primero es de I13 y lo segundo queda sin observar.
+    foto["workers"] = {"egress-mx": {"observable": False, "motivo": "GET /salud: HTTP 401", "rechazo": 401},
+                       "congreso-archivo": {"observable": False, "motivo": "falta CONGRESO_ARCHIVO_TOKEN en el entorno"}}
+    assert inv.i10(foto, cadenas, AHORA) == []
+    assert [h.objeto for h in inv.i13(foto, cadenas, AHORA)] == ["EGRESS_MX_TOKEN@egress-mx"]
 
 
 # ---- I12: toda petición se atiende ----
@@ -611,7 +647,7 @@ def test_i12_espera_al_pr_abierto_de_la_cadena_pedida(cadenas, foto_sana):
 
 
 def test_sin_observar_dice_que_invariante_no_pudo_mirar_que(cadenas, foto_sana):
-    assert inv.sin_observar(foto_sana(), cadenas) == {"I10": "congreso-archivo: sin acceso"}
+    assert inv.sin_observar(foto_sana(), cadenas) == {"I10": "congreso-archivo: sin acceso; egress-mx: sin acceso"}
     foto = foto_sana()
     foto["repos"]["constitucion-web"] = {"observable": False, "corridas": [], "ultima_exitosa": {}}
     foto["motivos"] = {"constitucion-web": "HTTP 404", "fiscal-extractor (artefactos)": "HTTP 403"}

@@ -816,6 +816,52 @@ def test_el_latido_distingue_sin_observar_de_ok(cadenas, foto_sana, mundo):
     assert "I8 sin-observar" in texto and "- I8: constitucion-web: HTTP 404" in texto
 
 
+def test_i10_un_worker_que_no_contesta_espera_su_tolerancia_antes_del_issue(cadenas, foto_sana, mundo):
+    """Mientras el /salud de egress-mx no esté desplegado contesta 404: nada de issues hasta pasadas 6 h seguidas."""
+    import dataclasses
+
+    from supervisor.__main__ import correr
+    from supervisor.actuar import Actor
+    from supervisor.estado import Estado
+    con = dataclasses.replace(cadenas, invariantes=cadenas.invariantes | {"I10": True})
+    archivo = {"observable": True, "sitios": {}}
+
+    def vuelta(egress, horas):
+        estado = Estado(mundo.carpeta)
+        foto = foto_sana()
+        foto["workers"] = {"congreso-archivo": archivo, "egress-mx": egress}
+        r = correr(foto, con, estado, AHORA + timedelta(hours=horas), Actor(mundo.cliente, con, "actuar"))
+        estado.guardar()
+        return r | {"estado": estado}
+
+    sin_salud = {"observable": False, "motivo": "GET /salud: HTTP 404", "sin_salud": True}
+    sano = {"observable": True, "salida": {"ok": True, "pais": "MX", "colo": "MEX"}}
+    for horas in (0, 0.25, 3, 5.75):
+        [d] = mundo.de(vuelta(sin_salud, horas), "I10")
+        assert d.accion == "esperar" and d.proxima == iso(AHORA + timedelta(hours=6)) and mundo.cliente.issues == 0
+    # Se desplegó: resuelta sin dejar rastro, y la cuenta empieza de cero si vuelve a pasar.
+    r = vuelta(sano, 5.9)
+    assert not mundo.de(r, "I10") and d.huella not in r["estado"].huellas and r["latido"]["invariantes"]["I10"] == "ok"
+    assert mundo.de(vuelta(sin_salud, 7), "I10")[0].accion == "esperar"
+    assert mundo.de(vuelta({"observable": False, "motivo": "GET /salud: HTTP 502", "sin_salud": True}, 12.9), "I10")[0].accion == "esperar"
+    # Seis horas seguidas sin contestar: constancia, una sola vez aunque el código cambie.
+    r = vuelta(sin_salud, 13)
+    [d] = mundo.de(r, "I10")
+    assert (d.accion, d.clase, d.hallazgo.objeto) == ("agotada", "determinista", "egress-mx/salud") and mundo.cliente.issues == 1
+    assert "no contesta su /salud" in d.motivo
+    assert mundo.de(vuelta({"observable": False, "motivo": "GET /salud: HTTP 500", "sin_salud": True}, 13.25), "I10")[0].accion == "nada"
+    # Sin el token no se sabe: la huella sigue. Cuando contesta, se cierra su issue.
+    r = vuelta({"observable": False, "motivo": "falta EGRESS_MX_TOKEN en el entorno"}, 13.5)
+    assert r["estado"].huellas[d.huella]["estado"] == "agotada"
+    r = vuelta(sano, 14)
+    assert r["estado"].huellas[d.huella]["estado"] == "resuelta"
+    # Lo mismo cuando contesta pero ya no sale desde México.
+    fuera = {"observable": True, "salida": {"ok": True, "pais": None, "colo": "IAD"}}
+    assert mundo.de(vuelta(fuera, 15), "I10")[0].accion == "esperar"
+    [d] = mundo.de(vuelta(fuera, 21), "I10")
+    assert d.accion == "agotada" and "ya no sale desde MX" in d.motivo and mundo.cliente.issues == 2
+
+
 def test_i10_sin_token_sale_sin_observar_y_con_un_sitio_atorado_deja_constancia(cadenas, foto_sana, mundo):
     import dataclasses
 
@@ -835,11 +881,12 @@ def test_i10_sin_token_sale_sin_observar_y_con_un_sitio_atorado_deja_constancia(
     sin_token["motivos"] = {"congreso-archivo": "falta CONGRESO_ARCHIVO_TOKEN en el entorno"}
     r = vuelta(sin_token)
     assert r["latido"]["invariantes"]["I10"] == "sin-observar"
-    assert r["latido"]["motivos"] == {"I10": "congreso-archivo: falta CONGRESO_ARCHIVO_TOKEN en el entorno"}
+    assert r["latido"]["motivos"] == {"I10": "congreso-archivo: falta CONGRESO_ARCHIVO_TOKEN en el entorno; egress-mx: sin acceso"}
 
     def con_sitios(pendientes):
         foto = foto_sana()
-        foto["workers"] = {"congreso-archivo": {"observable": True, "sitios": {
+        foto["workers"] = {"egress-mx": {"observable": True, "salida": {"ok": True, "pais": "MX", "colo": "MEX"}},
+                           "congreso-archivo": {"observable": True, "sitios": {
             "gaceta.diputados.gob.mx": {"pendientes": pendientes, "pendiente_mas_antigua": t(7), "ultimo_exito": t(9)},
             "www.senado.gob.mx": {"pendientes": 3, "pendiente_mas_antigua": t(1), "ultimo_exito": t(0.1)}}}}
         return foto

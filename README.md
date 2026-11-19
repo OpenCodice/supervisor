@@ -20,7 +20,7 @@ porque aquí la pregunta no es «¿qué acaba de pasar?» sino «¿qué debería
 | I7 | Un extractor nuevo se prueba contra su corpus (apagada: lo piden las corridas, I12) | — |
 | I8 | La web está al día con los repos de datos | lanza el despliegue |
 | I9 | Los relojes viven | constancia |
-| I10 | Los Workers avanzan (`GET /salud` de `congreso-archivo`) | constancia, por sitio |
+| I10 | Los Workers viven y hacen su trabajo (`GET /salud`): `congreso-archivo` avanza en cada sitio; `egress-mx` sale desde México | constancia, por sitio o por Worker; uno que no contesta, tras 6 h seguidas |
 | I11 | Ningún workflow lleva tres corridas seguidas en rojo | lanza al agente de infraestructura |
 | I12 | Toda petición se atiende | lanza el workflow pedido con la unión de los inputs pedidos |
 | I13 | Las credenciales siguen vigentes: `SUPERVISOR_TOKEN` no vence en menos de 30 días ni perdió permisos, y `congreso-archivo` acepta su token | constancia, por credencial, con cómo renovarla; se recuerda cada semana y se cierra sola al cambiar |
@@ -45,8 +45,8 @@ También es un hallazgo de I13, cada uno con su issue:
 - **`supervisor.yml` sin `SUPERVISOR_TOKEN`**: la vuelta corrió con el token del job, en modo informe, y
   nada se lanza ni se relanza (ese hallazgo queda en el resumen y en el latido: en modo informe no se
   escriben issues);
-- **el Worker `congreso-archivo` rechaza `CONGRESO_ARCHIVO_TOKEN`** (401 de `GET /salud`): se cambió en
-  un lado y no en el otro.
+- **el Worker `congreso-archivo` rechaza `CONGRESO_ARCHIVO_TOKEN`**, o `egress-mx` rechaza
+  `EGRESS_MX_TOKEN` (401 de `GET /salud`): se cambió en un lado y no en el otro.
 
 Si GitHub rechaza el token en todo (401: venció o se revocó), la vuelta termina en rojo en vez de pasar
 por sana sin haber visto nada, y el hombre muerto del Worker `scheduler` avisa con su propio token. Las
