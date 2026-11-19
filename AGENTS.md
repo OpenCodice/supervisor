@@ -223,10 +223,11 @@ gastar sesión. El supervisor no se repara a sí mismo.
 | `lint`, `actionlint`, `shell`, `node` | sin hallazgos nuevos frente al árbol de partida: un arreglo que haga que un workflow lance otra corrida no entra (`lint_workflows.py`, `actionlint` 1.7.12 con `shellcheck`, `bash -n`, `node --check`) |
 | `pytest`, `node-test`, `wrangler` | en verde |
 
-**Estrechar un `if:`** (`compuertas._if_mas_estricto`). En un job con poder, el `if:` de un paso que no
-es compuerta puede cambiar solo a `<guarda> && <viejo>` o `<viejo> && <guarda>`: la condición anterior
-letra por letra (se admiten los `${{ }}` exteriores y envolverla en paréntesis, obligatorios si trae un
-`||` fuera de paréntesis), y un paso sin `if:` puede ganar la guarda sola. Gramática de la guarda:
+**Estrechar un `if:`** (`compuertas._if_mas_estricto`). En un job con poder, el `if:` del **paso de la
+huella** (el que falló; el de cualquier otro paso no cambia), si no es compuerta, puede cambiar solo a
+`<guarda> && <viejo>` o `<viejo> && <guarda>`: la condición anterior letra por letra (se admiten los
+`${{ }}` exteriores y envolverla en paréntesis, obligatorios si trae un `||` fuera de paréntesis), y un paso
+sin `if:` puede ganar la guarda sola. Gramática de la guarda:
 
 ```
 guarda      = comparacion { "&&" comparacion }
@@ -239,16 +240,19 @@ literal     = "'" { letra | dígito | "_" | " " | "." | ":" | "/" | "-" } "'" | 
 El `id` es el de un paso anterior del mismo job, el job está en su `needs` y el input está declarado.
 Sin funciones (`always()` quitaría el `success()` implícito), sin `||`, sin `!`, sin paréntesis y sin
 `env.`/`secrets.`/`github.`, el resultado es `viejo && algo`: el paso corre en un subconjunto de los
-casos en que corría. A lo más `max_if_con_poder` (1) por arreglo. Lo que no cubre: quien consume una
-salida del paso estrechado la recibe nula, y una condición que el nulo satisface (`== ''`, `== '0'`,
-`!= 'x'`) sigue corriendo sin ella; eso lo ven el juez y la corrida de prueba, que revierte el arreglo.
+casos en que corría. `max_if_con_poder` (1) queda como interruptor: en 0 no se admite ninguno. Lo que
+no cubre: quien consume una salida del paso estrechado la recibe nula, y una condición que el nulo
+satisface (`== ''`, `== '0'`, `!= 'x'`) sigue corriendo sin ella. Por eso solo vale en el paso de la
+huella: el que deja de correr es el que ya estaba roto, no otro que hacía su trabajo. El juez tiene un
+criterio propio para ese parche (la guarda tiene que decir la causa, y el paso no puede ser el que
+detectaba o reportaba el problema) y la corrida de prueba revierte el arreglo si el paso no pasa.
 Caso real: `tests/fixtures/if_estricto/` (huella `4516547eae19`).
 
 Son estrictas a propósito: casi todos los jobs de los extractores tienen poder, así que un arreglo
-legítimo que ahí ensanche o reescriba un `if`, cambie un permiso o agregue un paso queda `agotada` con
-su motivo. Es el residuo que este diseño acepta. Si agregas una regla, agrega su parche tramposo a
-`tests/test_compuertas.py`; los arreglos reales del exit 127 (`tests/fixtures/exit127/`) y de la guarda
-(`tests/fixtures/if_estricto/`) tienen que seguir pasando.
+legítimo que ahí ensanche o reescriba un `if`, estreche el de otro paso, cambie un permiso o agregue un
+paso queda `agotada` con su motivo. Es el residuo que este diseño acepta. Si agregas una regla, agrega su
+parche tramposo a `tests/test_compuertas.py`; los arreglos reales del exit 127
+(`tests/fixtures/exit127/`) y de la guarda (`tests/fixtures/if_estricto/`) tienen que seguir pasando.
 
 **Ensayo**: `-f ensayo=true` hace todo y no publica ni anota nada (ni el intento); el parche, las
 compuertas y los veredictos quedan como artefactos. Con `-f base=<sha>` parte de ese commit del repo

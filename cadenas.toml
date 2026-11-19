@@ -518,7 +518,8 @@ max_lineas = 120
 # arreglo puede cambiar por paso.
 max_lineas_paso_con_poder = 6
 # En esos mismos jobs, pasos cuyo `if:` puede estrechar un arreglo (el `if:`
-# anterior intacto, con una guarda unida por `&&`).
+# anterior intacto, con una guarda unida por `&&`). Solo vale en el paso de la
+# huella, así que en la práctica es un interruptor: 0 lo apaga.
 max_if_con_poder = 1
 timeout_max_min = 355
 # Horas que se espera el resultado de una sesión antes de darla por perdida.

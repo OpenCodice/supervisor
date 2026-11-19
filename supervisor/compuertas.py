@@ -14,8 +14,8 @@ herramienta, un archivo no se deja leer) cuenta como falla.
              concurrency, environment y el conjunto de jobs y de pasos,
              idénticos; en un job con poder (secretos o token de escritura, o
              del que depende uno que los tiene) un `run:` solo cambia de las
-             formas de `_run_con_poder`, y un `if:` solo se estrecha con una
-             guarda (`_if_mas_estricto`).
+             formas de `_run_con_poder`, y solo el `if:` del paso de la huella
+             se estrecha con una guarda (`_if_mas_estricto`).
 - lineas     lo prohibido en cualquier línea añadida: red, hosts nuevos,
              codificación, TLS, esconder una falla, secretos, entorno,
              intérpretes en línea, instalar paquetes, git o gh hacia fuera.
@@ -593,6 +593,8 @@ def _if_mas_estricto(viejo, nuevo, pasos_previos: set[str], needs: set[str], inp
     falle, pero una condición que el nulo satisface (`== ''`, `== '0'`,
     `!= 'x'`) sigue corriendo sin ella. Eso lo juzga el segundo agente, y la
     corrida de prueba revierte el arreglo si el paso de la huella no pasa.
+    Por eso quien llama solo lo admite en el paso de la huella: el que deja
+    de correr es el que ya fallaba, no otro que hacía su trabajo.
     """
     e_nuevo = _expresion(nuevo)
     if e_nuevo is None:
@@ -636,7 +638,8 @@ def _tiempos(r: Resultado, archivo: str, wf: dict, antes: dict, tope: int) -> No
 
 
 def _poder_de_workflow(r: Resultado, c: Cambio, cadenas: Cadenas, repo: str, antes: Path,
-                       lint_antes: "_Lint | None", lint_despues: "_Lint | None", ifs: list[str]) -> None:
+                       lint_antes: "_Lint | None", lint_despues: "_Lint | None", ifs: list[str],
+                       huella: dict) -> None:
     archivo, nombre = c.ruta, c.ruta.rsplit("/", 1)[-1]
     if c.tipo != "M":
         r.falla("poder", f"{archivo}: no se crean ni se borran workflows")
@@ -654,6 +657,7 @@ def _poder_de_workflow(r: Resultado, c: Cambio, cadenas: Cadenas, repo: str, ant
     problema = _on(a.get("on"), d.get("on"))
     if problema:
         r.falla("poder", f"{archivo}: {problema}")
+    del_paso = paso_de_la_huella(a, huella) if nombre == huella.get("workflow") and huella.get("paso") else None
     jobs_a, jobs_d = _mapa(a.get("jobs")), _mapa(d.get("jobs"))
     if set(jobs_a) != set(jobs_d):
         r.falla("poder", f"{archivo}: agrega o quita jobs: {sorted(set(jobs_a) ^ set(jobs_d))}")
@@ -726,7 +730,9 @@ def _poder_de_workflow(r: Resultado, c: Cambio, cadenas: Cadenas, repo: str, ant
                         r.falla("poder", f"{donde}: cambia `{campo}` en un job con poder")
                 if pa.get("if") != pd.get("if"):
                     disparo = _mapa(d.get("on"))
-                    problema = "quita su `if:`" if "if" not in pd else _if_mas_estricto(
+                    es_el_de_la_huella = del_paso is not None and del_paso[0] == k and del_paso[1] is pa
+                    problema = "quita su `if:`" if "if" not in pd else (
+                        "solo se estrecha el `if:` del paso de la huella") if not es_el_de_la_huella else _if_mas_estricto(
                         pa.get("if"), pd["if"], {str(p["id"]) for p in pasos_d[:j] if p.get("id")},
                         set(map(str, _lista(jd.get("needs")))),
                         {str(x) for e in ("workflow_dispatch", "workflow_call")
@@ -752,11 +758,11 @@ def _poder_de_workflow(r: Resultado, c: Cambio, cadenas: Cadenas, repo: str, ant
 
 
 def _poder(r: Resultado, cambios: list[Cambio], cadenas: Cadenas, repo: str, antes: Path,
-           lint_antes, lint_despues) -> None:
+           lint_antes, lint_despues, huella: dict) -> None:
     ifs: list[str] = []
     for c in cambios:
         if c.ruta.startswith(".github/") and c.ruta.endswith((".yml", ".yaml")):
-            _poder_de_workflow(r, c, cadenas, repo, antes, lint_antes, lint_despues, ifs)
+            _poder_de_workflow(r, c, cadenas, repo, antes, lint_antes, lint_despues, ifs, huella)
     tope = cadenas.reparacion.get("max_if_con_poder", 1)
     if len(ifs) > tope:
         r.falla("poder", f"estrecha el `if:` de {len(ifs)} pasos con poder (tope: {tope})")
@@ -1215,7 +1221,7 @@ def evaluar(antes: Path, despues: Path, cambios: list[Cambio], huella: dict, cad
     if "yaml" in cuales:
         _yaml(r, cambios)
     if "poder" in cuales:
-        _poder(r, cambios, cadenas, repo, antes, lint_antes, lint_despues)
+        _poder(r, cambios, cadenas, repo, antes, lint_antes, lint_despues, huella)
     if "lineas" in cuales:
         _lineas(r, cambios)
     if "contenido" in cuales:

@@ -427,11 +427,24 @@ def test_a_lo_mas_un_if_estrechado_por_arreglo(con_if, cadenas):
     otro = ("        if: steps.altas.outputs.pendientes != '' && steps.altas.outputs.pendientes != '0' && !inputs.sin_esperar\n",
             f"        if: {LIBRE} && steps.altas.outputs.pendientes != '' && steps.altas.outputs.pendientes != '0' && !inputs.sin_esperar\n")
     r = con_if(f"{LIBRE} && {VIEJO_IF}", ademas=[otro])
-    assert r.de("poder") == ["estrecha el `if:` de 2 pasos con poder (tope: 1)"]
-    dos = dataclasses.replace(cadenas, reparacion=cadenas.reparacion | {"max_if_con_poder": 2})
-    assert con_if(f"{LIBRE} && {VIEJO_IF}", ademas=[otro], cad=dos).fallas == []
+    assert any("paso «Retomar la cadena»" in d and "solo se estrecha el `if:` del paso de la huella" in d for d in r.de("poder"))
+    # El tope queda como interruptor: en 0, ni el del paso de la huella.
     cero = dataclasses.replace(cadenas, reparacion=cadenas.reparacion | {"max_if_con_poder": 0})
     assert con_if(f"{LIBRE} && {VIEJO_IF}", cad=cero).de("poder")
+
+
+def test_solo_se_estrecha_el_paso_de_la_huella(juzgar):
+    """La misma guarda, bien formada, en un paso que no es el que falló: no entra."""
+    viejo = "        if: steps.altas.outputs.pendientes != '' && steps.altas.outputs.pendientes != '0' && !inputs.sin_esperar\n"
+    cambio = {EE: con(ANTES_IF, viejo, viejo.replace("if: ", f"if: {LIBRE} && "))}
+    r = juzgar(cambio, base={EE: ANTES_IF}, huella=H_IF)
+    assert any("paso «Retomar la cadena»: cambia `if` en un job con poder y no solo lo estrecha: solo se estrecha el `if:` "
+               "del paso de la huella" in d for d in r.de("poder"))
+    assert juzgar(cambio, base={EE: ANTES_IF}, huella=H_IF | {"paso": "Retomar la cadena"}).fallas == []
+    # Ni con la huella de otro workflow, de otro job, o sin paso (un workflow que no arrancaba).
+    for h in (H_IF | {"workflow": "vigilar-leyes-estatales.yml"}, H_IF | {"job": "codigo"}, H_IF | {"paso": None}):
+        r = juzgar({EE: DESPUES_IF}, base={EE: ANTES_IF, VLE: ANTES}, huella=h)
+        assert any("solo se estrecha el `if:` del paso de la huella" in d for d in r.de("poder")), h
 
 
 def test_la_guarda_no_trae_otro_cambio_al_paso(con_if):

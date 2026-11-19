@@ -116,8 +116,9 @@ los secretos de la organización. Se descarta entero si:
 Si la causa es que un paso corre cuando no debía (su `if:` se cumple aunque se
 saltó el paso del que depende: con un paso saltado sus salidas son nulas, y en
 las expresiones de Actions `null == '0'` y `null == ''` son verdaderos), el
-arreglo es anteponerle una guarda. En un job con secretos se admite en
-__MAX_IF__ paso por arreglo, que no sea una compuerta, y solo así:
+arreglo es anteponerle una guarda. En un job con secretos se admite solo en
+**el paso de la huella** (el que falló, no otro; __MAX_IF__ por arreglo), si
+no es una compuerta, y solo así:
 
 ```yaml
 # antes
@@ -144,8 +145,9 @@ if: steps.cadena.outputs.libre == 'true' && steps.altas.outputs.pendientes == '0
 Solo sirve para que un paso corra **menos**. Antes de usarlo, mira qué pasos
 de después leen las salidas del que estrechas: con él saltado las reciben
 nulas, y tienen que saltarse o fallar, no seguir como si nada. Cualquier otro
-cambio de un `if:` en un job con secretos (quitarle algo, reescribirlo,
-ensancharlo) se descarta.
+cambio de un `if:` en un job con secretos (el de otro paso, quitarle algo,
+reescribirlo, ensancharlo) se descarta: si el arreglo correcto es estrechar
+un paso que no es el que falló, entrega `no-puedo` y dilo.
 
 Si pasa, se publica en main, se relanza la corrida que falló y, si el paso
 vuelve a fallar igual, tu arreglo se revierte solo. Si el arreglo correcto
