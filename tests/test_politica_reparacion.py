@@ -141,6 +141,8 @@ def test_tope_de_sesiones_por_dia(cadenas, foto_sana, mundo):
         anotar(mundo, "agente", f"otra{n}", minutos(-600 + n), repo="supervisor", workflow="reparar-infra.yml")
     d = huella_de(mundo.vuelta(foto_sana((FE, rota(5, wf)), (FE, rota(3, wf)))), mundo)
     assert (d.accion, d.motivo) == ("esperar", "tope diario de sesiones de agente")
+    # Se sabe hasta cuándo: la sesión más antigua de las últimas 24 h deja su lugar al cumplirlas.
+    assert d.proxima == iso(minutos(-600) + timedelta(hours=24))
     assert mundo.cliente.lanzamientos() == []
 
 

@@ -376,10 +376,13 @@ def _agente(v: _Vuelta, d: Decision, motivo: str) -> Decision:
         d.accion, d.motivo = "esperar", f"ese workflow tiene un arreglo en curso (huella {en_prueba['huella']})"
         return d
     desde = v.ahora - timedelta(hours=24)
-    hoy = sum(1 for a in v.acciones if a.get("accion") == "agente" and a.get("resultado") == "ok"
-              and instante(a["cuando"]) >= desde)
-    if hoy + v.agentes >= pol.get("sesiones_agente_por_dia", 3):
+    recientes = sorted(instante(a["cuando"]) for a in v.acciones if a.get("accion") == "agente"
+                       and a.get("resultado") == "ok" and instante(a["cuando"]) >= desde)
+    if len(recientes) + v.agentes >= pol.get("sesiones_agente_por_dia", 3):
         d.accion, d.motivo = "esperar", "tope diario de sesiones de agente"
+        if recientes:
+            # Se libera un lugar cuando la sesión más antigua de la ventana cumple 24 h.
+            d.proxima = iso(recientes[0] + timedelta(hours=24))
         return d
     _lanzar_reparacion(v, d, "agente", {"huella": reg["huella"]}, motivo, {
         "estado": "en-reparacion", "motivo": motivo, "reparacion": {"lanzada": iso(v.ahora)}, "+sesiones": 1,
