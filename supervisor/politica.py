@@ -207,7 +207,7 @@ def _gracia(v: _Vuelta) -> timedelta:
 
 
 def _ocupada_fuera_de_la_foto(v: _Vuelta, wf: Workflow) -> str | None:
-    """Para quien declara `espera_libre`: la cadena a la que espera, ocupada por un lanzamiento que la
+    """Para lo que lanza I1 de quien declara `espera_libre`: la cadena a la que espera, ocupada por un lanzamiento que la
     foto todavía no trae (uno de esta misma vuelta, o uno reciente cuya corrida aún no aparece)."""
     for otro in wf.espera_libre:
         if any((repo, archivo) == (wf.repo, otro) for repo, archivo, _ in v.lanzados):
@@ -538,7 +538,7 @@ def _lanzar(v: _Vuelta, d: Decision, wf: Workflow | None, espera_h: float, accio
         d.accion = "esperar"
         d.motivo = f"el PR #{numero} de {repo_datos} sigue abierto: se lanza cuando se fusione (o cuando I5 lo cierre)"
         return d
-    ocupada = h.extra.get("ocupada") or (_ocupada_fuera_de_la_foto(v, wf) if h.extra.get("horario") else None)
+    ocupada = h.extra.get("ocupada") or (_ocupada_fuera_de_la_foto(v, wf) if h.invariante == "I1" else None)
     if ocupada:
         d.accion, d.motivo = "esperar", f"se lanza cuando la cadena quede libre: {ocupada}"
         return d
@@ -726,7 +726,7 @@ def _se_ve(foto: dict, reg: dict) -> bool:
 
 def _espera_a_otra(h: Hallazgo, cadenas: Cadenas) -> bool:
     wf = cadenas.workflow(h.repo, h.workflow) if h.workflow else None
-    return bool(h.invariante == "I1" and h.extra.get("horario") and wf is not None and wf.espera_libre)
+    return bool(h.invariante == "I1" and wf is not None and wf.espera_libre)
 
 
 def _tratar(v: _Vuelta, h: Hallazgo, decisiones: list[Decision]) -> Decision:

@@ -706,6 +706,34 @@ def test_la_ronda_espera_aunque_la_vigilancia_se_decida_despues(cadenas, foto_sa
                    "detalle": {"repo": FE, "workflow": VLE, "prueba": {"lanzada": True}}}) == "esperar"
 
 
+def test_la_cadencia_de_la_ronda_tambien_espera_a_la_cadena(cadenas, foto_sana, mundo):
+    """Sin corrida exitosa en su ventana, la ronda se lanza por cadencia solo con la cadena libre, como su cita."""
+    wf = cadenas.workflow(FE, VLE)
+    sin_ronda = ((FE, "expandir-estatales.yml"),)
+    destinos = lambda: [destino for destino, _ in mundo.cliente.lanzamientos() if destino.startswith(FE)]  # noqa: E731
+    viva_ = (FE, corrida(VLE, None, hace_h=1, titulo=titulo(wf, estados="jalisco")))
+    [d] = mundo.de(mundo.vuelta(foto_sana(viva_, sin=sin_ronda)), "I1", "expandir-estatales.yml")
+    assert d.hallazgo.base == "cadencia-0" and d.accion == "esperar"
+    assert "cuando la cadena quede libre" in d.motivo and "en curso o en espera" in d.motivo
+    # Un PR automático abierto de esa cadena también la ocupa.
+    pr = {"number": 77, "head_ref": "reforma/leyes-estatales", "labels": ["automatico"], "created_at": t(1),
+          "updated_at": t(1), "cross": False}
+    [d] = mundo.de(mundo.vuelta(foto_sana(sin=sin_ronda, datos={"leyes-estatales": {"prs": [pr]}})), "I1", "expandir-estatales.yml")
+    assert d.accion == "esperar" and "PR #77" in d.motivo
+    # Y la vigilancia que esta misma vuelta lanza por su cadencia, se decida antes o después.
+    r = mundo.vuelta(foto_sana(sin=sin_ronda + ((FE, VLE),)))
+    assert mundo.de(r, "I1", VLE)[0].accion == "lanzar"
+    [d] = mundo.de(r, "I1", "expandir-estatales.yml")
+    assert d.accion == "esperar" and "se lanza en esta misma vuelta" in d.motivo
+    assert destinos() == [DESTINO]
+    # Libre: se lanza, una vez. Las demás cadencias no cambian: quien no declara espera_libre no espera a nadie.
+    r = mundo.vuelta(foto_sana(sin=sin_ronda), AHORA + timedelta(hours=2))
+    assert mundo.de(r, "I1", "expandir-estatales.yml")[0].accion == "lanzar"
+    assert destinos() == [DESTINO, f"{FE}/expandir-estatales.yml"]
+    mundo.vuelta(foto_sana(sin=sin_ronda), AHORA + timedelta(hours=2, minutes=1))
+    assert len(destinos()) == 2
+
+
 # ---- I8 sin el aviso de los workflows ----
 
 def test_la_web_se_despliega_sola_y_un_despliegue_roto_no_entra_en_bucle(cadenas, foto_sana, mundo):

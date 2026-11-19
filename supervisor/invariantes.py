@@ -402,6 +402,18 @@ def _ultima_cita(horario: tuple[dict, ...], ahora: datetime) -> tuple[datetime, 
     return (mejor[0], mejor[1]) if mejor else None
 
 
+def _cadena_ocupada(foto: dict, cadenas: Cadenas, wf: Workflow) -> str | None:
+    """Por qué no está libre alguna de las cadenas a las que este workflow espera (`espera_libre`)."""
+    for otro in wf.espera_libre:
+        vivas = [c for c in corridas_de(foto, wf.repo, otro) if viva(c)]
+        if vivas:
+            return f"{otro} tiene la corrida {vivas[-1]['id']} en curso o en espera"
+        pr = pr_abierto_de(foto, cadenas, wf.repo, otro)
+        if pr:
+            return f"el PR #{pr[1]} de {pr[0]}, que abre {otro}, sigue abierto"
+    return None
+
+
 def _por_horario(foto: dict, cadenas: Cadenas, wf: Workflow, todas: list[dict], ahora: datetime) -> Hallazgo | None:
     """Lo que tocaba lanzar a su hora y todavía no tiene corrida."""
     cita = _ultima_cita(wf.horario, ahora)
@@ -421,16 +433,7 @@ def _por_horario(foto: dict, cadenas: Cadenas, wf: Workflow, todas: list[dict], 
         # Ya tiene su corrida: una creada desde su hora, o una anterior que sigue esperando su turno.
         if instante(c["created_at"]) >= momento - timedelta(minutes=2) or en_espera(c):
             return None
-    ocupada = None
-    for otro in wf.espera_libre:
-        vivas = [c for c in corridas_de(foto, wf.repo, otro) if viva(c)]
-        pr = pr_abierto_de(foto, cadenas, wf.repo, otro)
-        if vivas:
-            ocupada = f"{otro} tiene la corrida {vivas[-1]['id']} en curso o en espera"
-        elif pr:
-            ocupada = f"el PR #{pr[1]} de {pr[0]}, que abre {otro}, sigue abierto"
-        if ocupada:
-            break
+    ocupada = _cadena_ocupada(foto, cadenas, wf)
     return Hallazgo(
         invariante="I1", repo=wf.repo, workflow=wf.archivo,
         objeto=f"{wf.repo}/{wf.archivo}@{iso(momento)}",
@@ -467,6 +470,7 @@ def i1(foto: dict, cadenas: Cadenas, ahora: datetime) -> list[Hallazgo]:
                 inputs={k: filtro.get(k, wf.valor_omision(k)) for k in wf.inputs},
                 base=f"cadencia-{n}", cuando=iso(inicio(ultima) + ventana) if ultima else None,
                 en_vuelo=vivas[-1]["id"] if vivas else None,
+                extra={"ocupada": ocupada} if (ocupada := _cadena_ocupada(foto, cadenas, wf)) else {},
             ))
         if wf.lanza_horario and wf.horario:
             cita = _por_horario(foto, cadenas, wf, todas, ahora)
