@@ -302,6 +302,171 @@ def test_en_un_job_con_poder_no_cambian_if_env_ni_pasos(juzgar):
     assert any("no se agregan pasos a un job con poder" in d for d in r.de("poder"))
 
 
+# --------------------------------------------------------------------------
+# Un job con poder: el `if:` de un paso solo se estrecha con una guarda
+# --------------------------------------------------------------------------
+
+EE = ".github/workflows/expandir-estatales.yml"
+# El workflow real (fiscal-extractor 4eae1fc) hasta el cerco del agente, y el arreglo de la huella 4516547eae19.
+ANTES_IF = (FIXTURES / "if_estricto" / "antes.yml").read_text(encoding="utf-8")
+DESPUES_IF = (FIXTURES / "if_estricto" / "despues.yml").read_text(encoding="utf-8")
+H_IF = {"huella": "4516547eae19", "repo": FE, "workflow": "expandir-estatales.yml", "job": "ronda",
+        "paso": "Elegir el estado y contar el intento"}
+VIEJO_IF = ("((inputs.redeclarar == '' && (steps.altas.outputs.pendientes == '0' || (inputs.sin_esperar && "
+            "steps.altas.outputs.pendientes != ''))) || steps.fuera.outcome == 'success') && env.TIENE_CLAUDE == 'true'")
+LIBRE = "steps.cadena.outputs.libre == 'true'"
+
+
+@pytest.fixture
+def con_if(juzgar):
+    """Las compuertas sobre el workflow real con otro `if:` en el paso de la huella (y, si se pide, más cambios)."""
+    def _con_if(nuevo: str, **mas) -> cp.Resultado:
+        texto = con(ANTES_IF, f"        if: {VIEJO_IF}\n", f"        if: {nuevo}\n")
+        for viejo, otro in mas.get("ademas", ()):
+            texto = con(texto, viejo, otro)
+        return juzgar({EE: texto}, base={EE: ANTES_IF}, huella=H_IF, **{k: v for k, v in mas.items() if k != "ademas"})
+    return _con_if
+
+
+def test_el_arreglo_real_de_la_guarda_pasa(juzgar):
+    r = juzgar({EE: DESPUES_IF}, base={EE: ANTES_IF}, huella=H_IF)
+    assert r.fallas == []
+    assert (r.archivos, r.lineas) == ([EE], 2)
+
+
+@pytest.mark.skipif(not (shutil.which("actionlint") and shutil.which("shellcheck")), reason="sin actionlint/shellcheck")
+def test_el_arreglo_real_de_la_guarda_pasa_tambien_las_de_forma(juzgar):
+    assert juzgar({EE: DESPUES_IF}, base={EE: ANTES_IF}, huella=H_IF, cuales=cp.ESTATICAS).fallas == []
+
+
+@pytest.mark.parametrize("nuevo", [
+    f"{LIBRE} && ({VIEJO_IF})",
+    f"{VIEJO_IF} && {LIBRE}",
+    f"${{{{ {LIBRE} && {VIEJO_IF} }}}}",
+    f"{LIBRE} && inputs.simular != 'egress' && {VIEJO_IF}",
+    f"steps.cadena.outcome == 'success' && {VIEJO_IF}",
+    f"steps.altas.conclusion != 'skipped' && {VIEJO_IF}",
+    f"inputs.sin_esperar == false && {VIEJO_IF}",
+])
+def test_otras_formas_de_la_misma_guarda_pasan(con_if, nuevo):
+    assert con_if(nuevo).fallas == []
+
+
+def test_un_paso_sin_if_puede_ganar_una_guarda(juzgar):
+    h = H_IF | {"paso": "¿Terminó la cadena anterior?"}
+    cambio = lambda guarda: {EE: con(ANTES_IF, "        id: cadena\n", f"        id: cadena\n        if: {guarda}\n")}  # noqa: E731
+    assert juzgar(cambio("inputs.estado != 'x'"), base={EE: ANTES_IF}, huella=h).fallas == []
+    for guarda in ("always()", "inputs.estado != 'x' || true", "github.actor == 'x'"):
+        r = juzgar(cambio(guarda), base={EE: ANTES_IF}, huella=h)
+        assert any("no solo lo estrecha" in d for d in r.de("poder")), guarda
+
+
+@pytest.mark.parametrize("nuevo, motivo", [
+    # Ensanchar.
+    (f"{LIBRE} || {VIEJO_IF}", "no queda intacta"),
+    (f"({VIEJO_IF}) || {LIBRE}", "no queda intacta"),
+    (f"{LIBRE} && {VIEJO_IF} || inputs.sin_esperar == true", "no queda intacta"),
+    (f"{LIBRE} == 'x' || true && {VIEJO_IF}", "no es una comparación"),
+    # Quitar parte de la condición vieja.
+    (f"{LIBRE} && " + VIEJO_IF.replace(" && env.TIENE_CLAUDE == 'true'", ""), "no queda intacta"),
+    (f"{LIBRE} && " + VIEJO_IF.replace(" || steps.fuera.outcome == 'success'", ""), "no queda intacta"),
+    (LIBRE, "no queda intacta"),
+    # Reescribirla: equivalente, pero ya no es la misma letra por letra.
+    (f"{LIBRE} && env.TIENE_CLAUDE == 'true' && " + VIEJO_IF.replace(" && env.TIENE_CLAUDE == 'true'", ""), "no queda intacta"),
+    (f"{LIBRE} && " + VIEJO_IF.replace("== '0'", "=='0'"), "no queda intacta"),
+    (f"{LIBRE} && !(!({VIEJO_IF}))", "no queda intacta"),
+    # Funciones, negaciones y contextos que la guarda no admite.
+    (f"always() && {VIEJO_IF}", "no es una comparación"),
+    (f"${{{{ !cancelled() && {VIEJO_IF} }}}}", "no es una comparación"),
+    (f"{LIBRE} && always() && {VIEJO_IF}", "no es una comparación"),
+    (f"contains(steps.cadena.outputs.libre, 'true') && {VIEJO_IF}", "no es una comparación"),
+    (f"fromJSON(steps.cadena.outputs.libre) == true && {VIEJO_IF}", "no es una comparación"),
+    (f"${{{{ !steps.cadena.outputs.libre && {VIEJO_IF} }}}}", "no es una comparación"),
+    (f"steps.cadena.outputs.libre && {VIEJO_IF}", "no es una comparación"),
+    (f"({LIBRE}) && {VIEJO_IF}", "no es una comparación"),
+    (f"steps.cadena.outputs.libre == steps.altas.outputs.pendientes && {VIEJO_IF}", "no es una comparación"),
+    (f"steps.cadena.outputs.libre == 'a''b' && {VIEJO_IF}", "no es una comparación"),
+    (f"env.ENSAYO != 'true' && {VIEJO_IF}", "no es una comparación"),
+    (f"secrets.PR_TOKEN != '' && {VIEJO_IF}", "no es una comparación"),
+    (f"github.event_name == 'workflow_dispatch' && {VIEJO_IF}", "no es una comparación"),
+    # Lo que la guarda nombra tiene que existir, y un paso, estar antes.
+    (f"steps.pdfs.outcome == 'success' && {VIEJO_IF}", "`steps.pdfs` no es el `id` de un paso anterior"),
+    (f"steps.elegir.outputs.hay == 'true' && {VIEJO_IF}", "`steps.elegir` no es el `id` de un paso anterior"),
+    (f"steps.nadie.outputs.libre == 'true' && {VIEJO_IF}", "`steps.nadie` no es el `id` de un paso anterior"),
+    (f"needs.codigo.result == 'success' && {VIEJO_IF}", "`needs.codigo` no está en el `needs` del job"),
+    (f"inputs.inventado == 'x' && {VIEJO_IF}", "`inputs.inventado` no es un input declarado"),
+    # Un `${{ }}` a medias no es una condición: GitHub lo vuelve un texto, siempre verdadero.
+    (f"${{{{ {LIBRE} }}}} && {VIEJO_IF}", "no es una sola expresión"),
+])
+def test_un_if_con_poder_solo_se_estrecha(con_if, nuevo, motivo):
+    r = con_if(nuevo)
+    assert any("cambia `if` en un job con poder y no solo lo estrecha" in d and motivo in d for d in r.de("poder")), r.fallas
+
+
+def test_quitar_un_if_con_poder_no_pasa(juzgar):
+    r = juzgar({EE: con(ANTES_IF, f"        if: {VIEJO_IF}\n", "")}, base={EE: ANTES_IF}, huella=H_IF)
+    assert any("quita su `if:`" in d for d in r.de("poder"))
+
+
+def test_el_if_de_una_compuerta_no_se_estrecha(juzgar, cadenas):
+    paso = "Lo que el agente no puede tocar"
+    assert any(c["paso"] == paso for c in cadenas.workflow(FE, "expandir-estatales.yml").compuertas)
+    viejo = "        id: cerco\n        if: steps.elegir.outputs.hay == 'true'\n"
+    malo = con(ANTES_IF, viejo, f"        id: cerco\n        if: {LIBRE} && steps.elegir.outputs.hay == 'true'\n")
+    r = juzgar({EE: malo}, base={EE: ANTES_IF}, huella=H_IF)
+    assert any(f"paso «{paso}»: es una compuerta y tiene que quedar idéntico" in d for d in r.de("poder"))
+    # Tampoco el de un paso protegido por su nombre (`pasos_protegidos`), aunque no sea compuerta de cadenas.toml.
+    base = {EE: con(ANTES_IF, "      - name: Retomar la cadena\n", "      - name: Validar la cadena\n")}
+    viejo = "        if: steps.altas.outputs.pendientes != '' && steps.altas.outputs.pendientes != '0' && !inputs.sin_esperar\n"
+    r = juzgar({EE: con(base[EE], viejo, viejo.replace("if: ", f"if: {LIBRE} && "))}, base=base, huella=H_IF)
+    assert any("paso «Validar la cadena»: es una compuerta" in d for d in r.de("poder"))
+
+
+def test_a_lo_mas_un_if_estrechado_por_arreglo(con_if, cadenas):
+    import dataclasses
+    otro = ("        if: steps.altas.outputs.pendientes != '' && steps.altas.outputs.pendientes != '0' && !inputs.sin_esperar\n",
+            f"        if: {LIBRE} && steps.altas.outputs.pendientes != '' && steps.altas.outputs.pendientes != '0' && !inputs.sin_esperar\n")
+    r = con_if(f"{LIBRE} && {VIEJO_IF}", ademas=[otro])
+    assert r.de("poder") == ["estrecha el `if:` de 2 pasos con poder (tope: 1)"]
+    dos = dataclasses.replace(cadenas, reparacion=cadenas.reparacion | {"max_if_con_poder": 2})
+    assert con_if(f"{LIBRE} && {VIEJO_IF}", ademas=[otro], cad=dos).fallas == []
+    cero = dataclasses.replace(cadenas, reparacion=cadenas.reparacion | {"max_if_con_poder": 0})
+    assert con_if(f"{LIBRE} && {VIEJO_IF}", cad=cero).de("poder")
+
+
+def test_la_guarda_no_trae_otro_cambio_al_paso(con_if):
+    r = con_if(f"{LIBRE} && {VIEJO_IF}", ademas=[("          ESTADO_PEDIDO: ${{ inputs.estado }}\n", "          ESTADO_PEDIDO: ${{ inputs.redeclarar }}\n")])
+    assert any("cambia `env` en un job con poder" in d for d in r.de("poder"))
+
+
+def test_if_mas_estricto_bordes():
+    pasos, needs, inputs = {"a"}, {"previo"}, {"modo"}
+    juzga = lambda viejo, nuevo: cp._if_mas_estricto(viejo, nuevo, pasos, needs, inputs)  # noqa: E731
+    g = "steps.a.outputs.listo == 'true'"
+    # Con un `||` suelto, la condición vieja tiene que ir entre paréntesis: si no, absorbería a la guarda.
+    assert juzga("x == '1' || y == '2'", f"{g} && x == '1' || y == '2'") is not None
+    assert juzga("x == '1' || y == '2'", f"x == '1' || y == '2' && {g}") is not None
+    assert juzga("x == '1' || y == '2'", f"{g} && (x == '1' || y == '2')") is None
+    assert juzga("x == '1' || y == '2'", f"(x == '1' || y == '2') && {g}") is None
+    # Un `||` dentro de un literal o de paréntesis no es suelto.
+    assert juzga("contains(x, '||') && (p || q)", f"{g} && contains(x, '||') && (p || q)") is None
+    # Los `${{ }}` exteriores van y vienen; lo de dentro, letra por letra.
+    assert juzga("${{ always() && x }}", f"{g} && always() && x") is None
+    assert juzga("always() && x", f"${{{{ needs.previo.result == 'success' && (always() && x) }}}}") is None
+    assert juzga("x  == '1'", f"{g} && x == '1'") is not None
+    # La vieja como sufijo de otra cosa no es la vieja.
+    assert juzga("x", f"{g} && !x") is not None
+    assert juzga("x", f"{g} && y.x") is not None
+    assert juzga("x", f"{g} &&x") is None
+    # Una condición de partida que no cuadra (o que no es texto) no se estrecha.
+    assert juzga("a) || (b", f"{g} && (a) || (b)") is not None
+    assert juzga("${{ a }} == ${{ b }}", f"{g} && ${{{{ a }}}} == ${{{{ b }}}}") is not None
+    # Sin `if:` de partida: la guarda sola.
+    assert juzga(None, f"{g} && needs.previo.outputs.hay != '' && inputs.modo == 'x'") is None
+    assert juzga(None, "") is not None and juzga(None, f"{g} &&") is not None
+    assert juzga(None, f"{g} && success()") is not None
+
+
 def test_un_paso_que_es_compuerta_queda_identico(juzgar, cadenas):
     paso = next(c["paso"] for c in cadenas.workflow(FE, "vigilar-leyes-estatales.yml").compuertas
                 if f"- name: {c['paso']}\n" in DESPUES)

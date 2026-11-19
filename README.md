@@ -94,9 +94,10 @@ entra:
    log recortado del paso que falló y nada escrito por terceros. Entrega archivos, no commits.
 2. Compuertas sin ningún secreto comparan cada workflow tocado **como datos** antes y después: no
    pueden cambiar los disparadores, los permisos, los secretos de ningún paso, las acciones ni el
-   conjunto de jobs; en un job que corre con secretos casi nada puede cambiar; ninguna línea nueva puede
-   traer red, un host nuevo, ni esconder una falla; y el arreglo tiene que tocar el archivo del paso que
-   falló.
+   conjunto de jobs; en un job que corre con secretos casi nada puede cambiar (el `if:` de un paso solo
+   se puede estrechar: la condición anterior intacta, con una guarda unida por `&&`, para que corra
+   menos y nunca más); ninguna línea nueva puede traer red, un host nuevo, ni esconder una falla; y el
+   arreglo tiene que tocar el archivo del paso que falló.
 3. Otro agente, que no ve el razonamiento del primero, contesta tres preguntas cerradas.
 4. Si todo pasa, el arreglo se publica en main del extractor, se relanza la corrida que falló, y el
    reconciliador la vigila: si el paso vuelve a fallar igual (o no hay resultado en 12 horas), **lo

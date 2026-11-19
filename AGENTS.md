@@ -214,18 +214,39 @@ gastar sesión. El supervisor no se repara a sí mismo.
 | `alcance`, `tamano` | solo rutas declaradas; nada se borra; lo nuevo son pruebas; dentro del tope |
 | `yaml` | se lee, sin claves repetidas ni `<<` |
 | `poder` | cada workflow tocado, **leído como datos** antes y después: idénticos `on` (se admite un input nuevo opcional con valor por omisión), `permissions`, `concurrency`, `environment`, `runs-on`, cada `uses`, el conjunto de jobs y de pasos, y los secretos que nombra cada job y cada paso; los pasos que son compuertas (los de `cadenas.toml` y `pasos_protegidos`), idénticos enteros; ningún `timeout-minutes` mayor a 355 |
-| `poder`, en un job con poder | un job tiene poder si nombra un secreto, su token no es de solo lectura, llama a un workflow reutilizable, o un job con poder depende de él. Ahí no cambian `if`, `env`, `with` ni los pasos, y de un `run:` solo: en una línea que el lint de partida marcó como rota, la carpeta desde la que invoca al mismo script del repo (y el lint del resultado la resuelve a un checkout de este repo) o los campos de su `gh workflow run`; comillas; comentarios; `set -e…`; `mkdir -p`. Seis líneas por paso; ninguna se quita |
+| `poder`, en un job con poder | un job tiene poder si nombra un secreto, su token no es de solo lectura, llama a un workflow reutilizable, o un job con poder depende de él. Ahí no cambian `env`, `with` ni los pasos, y de un `run:` solo: en una línea que el lint de partida marcó como rota, la carpeta desde la que invoca al mismo script del repo (y el lint del resultado la resuelve a un checkout de este repo) o los campos de su `gh workflow run`; comillas; comentarios; `set -e…`; `mkdir -p`. Seis líneas por paso; ninguna se quita. Un `if:` de paso solo se estrecha (ver abajo); el de un job no cambia |
 | `lineas` | en cualquier línea añadida: ni `curl`/`wget`/`nc`/`ssh`/`scp`, ni un host o URL que no estuviera en ese archivo, ni `base64`/`eval`, ni desactivar TLS, ni `\|\| true`/`continue-on-error`/`set +e`/`exit 0`, ni el nombre de un secreto o token, ni `env`/`printenv`/`set -x`/`GITHUB_ENV`, ni intérpretes en línea, ni instalar algo (salvo `pip install -r`), ni `sudo`, ni `git push`/`gh api`, ni módulos de red o `fetch(` |
 | `contenido` | toca el workflow del paso de la huella o un archivo que ese paso invoca (resuelto con el lint), y nada más |
 | `worker` | ni bindings, ni rutas, ni `workers_dev`, ni nombres de `env.`, ni `fetch` nuevos; los crons solo si coinciden entre `wrangler.jsonc` y el código |
 | `lint`, `actionlint`, `shell`, `node` | sin hallazgos nuevos frente al árbol de partida: un arreglo que haga que un workflow lance otra corrida no entra (`lint_workflows.py`, `actionlint` 1.7.12 con `shellcheck`, `bash -n`, `node --check`) |
 | `pytest`, `node-test`, `wrangler` | en verde |
 
+**Estrechar un `if:`** (`compuertas._if_mas_estricto`). En un job con poder, el `if:` de un paso que no
+es compuerta puede cambiar solo a `<guarda> && <viejo>` o `<viejo> && <guarda>`: la condición anterior
+letra por letra (se admiten los `${{ }}` exteriores y envolverla en paréntesis, obligatorios si trae un
+`||` fuera de paréntesis), y un paso sin `if:` puede ganar la guarda sola. Gramática de la guarda:
+
+```
+guarda      = comparacion { "&&" comparacion }
+comparacion = referencia ("==" | "!=") literal
+referencia  = "steps." id ".outputs." nombre | "steps." id ".outcome" | "steps." id ".conclusion"
+            | "needs." job ".result" | "needs." job ".outputs." nombre | "inputs." nombre
+literal     = "'" { letra | dígito | "_" | " " | "." | ":" | "/" | "-" } "'" | "true" | "false"
+```
+
+El `id` es el de un paso anterior del mismo job, el job está en su `needs` y el input está declarado.
+Sin funciones (`always()` quitaría el `success()` implícito), sin `||`, sin `!`, sin paréntesis y sin
+`env.`/`secrets.`/`github.`, el resultado es `viejo && algo`: el paso corre en un subconjunto de los
+casos en que corría. A lo más `max_if_con_poder` (1) por arreglo. Lo que no cubre: quien consume una
+salida del paso estrechado la recibe nula, y una condición que el nulo satisface (`== ''`, `== '0'`,
+`!= 'x'`) sigue corriendo sin ella; eso lo ven el juez y la corrida de prueba, que revierte el arreglo.
+Caso real: `tests/fixtures/if_estricto/` (huella `4516547eae19`).
+
 Son estrictas a propósito: casi todos los jobs de los extractores tienen poder, así que un arreglo
-legítimo que cambie un `if`, un permiso o agregue un paso ahí queda `agotada` con su motivo. Es el
-residuo que este diseño acepta. Si agregas una regla, agrega su parche tramposo a
-`tests/test_compuertas.py`; el arreglo real del exit 127 (`tests/fixtures/exit127/`) tiene que seguir
-pasando.
+legítimo que ahí ensanche o reescriba un `if`, cambie un permiso o agregue un paso queda `agotada` con
+su motivo. Es el residuo que este diseño acepta. Si agregas una regla, agrega su parche tramposo a
+`tests/test_compuertas.py`; los arreglos reales del exit 127 (`tests/fixtures/exit127/`) y de la guarda
+(`tests/fixtures/if_estricto/`) tienen que seguir pasando.
 
 **Ensayo**: `-f ensayo=true` hace todo y no publica ni anota nada (ni el intento); el parche, las
 compuertas y los veredictos quedan como artefactos. Con `-f base=<sha>` parte de ese commit del repo

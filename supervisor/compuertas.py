@@ -14,7 +14,8 @@ herramienta, un archivo no se deja leer) cuenta como falla.
              concurrency, environment y el conjunto de jobs y de pasos,
              idénticos; en un job con poder (secretos o token de escritura, o
              del que depende uno que los tiene) un `run:` solo cambia de las
-             formas de `_run_con_poder`.
+             formas de `_run_con_poder`, y un `if:` solo se estrecha con una
+             guarda (`_if_mas_estricto`).
 - lineas     lo prohibido en cualquier línea añadida: red, hosts nuevos,
              codificación, TLS, esconder una falla, secretos, entorno,
              intérpretes en línea, instalar paquetes, git o gh hacia fuera.
@@ -514,6 +515,108 @@ def _run_con_poder(r: Resultado, donde: str, archivo: str, ra, rd, rotas: set[in
         r.falla("poder", f"{donde}: cambia {cambiadas} líneas de un `run:` que corre con poder (tope: {tope})")
 
 
+_ID = r"[A-Za-z_][A-Za-z0-9_-]*"
+_COMPARACION = re.compile(
+    rf"(?:steps\.(?P<paso>{_ID})\.(?:outputs\.{_ID}|outcome|conclusion)"
+    rf"|needs\.(?P<job>{_ID})\.(?:result|outputs\.{_ID})"
+    rf"|inputs\.(?P<input>{_ID}))"
+    r"[ \t]*(?:==|!=)[ \t]*(?:'[A-Za-z0-9_ .:/-]*'|true|false)")
+
+
+def _expresion(valor) -> str | None:
+    """El texto de un `if:` sin sus `${{ }}` exteriores; None si no es una sola expresión."""
+    if not isinstance(valor, str):
+        return None
+    texto = valor.strip()
+    if texto.startswith("${{") and texto.endswith("}}"):
+        texto = texto[3:-2].strip()
+    # Con un `${{ }}` a medias GitHub no evalúa una condición: arma un texto, que siempre es verdadero.
+    return None if not texto or "${{" in texto or "}}" in texto else texto
+
+
+def _alternativa_suelta(expresion: str) -> bool | None:
+    """¿Tiene un `||` fuera de paréntesis? None si los paréntesis o las comillas no cuadran."""
+    nivel, i, suelta = 0, 0, False
+    while i < len(expresion):
+        ch = expresion[i]
+        if ch == "'":
+            i = expresion.find("'", i + 1)
+            if i < 0:
+                return None
+        elif ch in "([":
+            nivel += 1
+        elif ch in ")]":
+            nivel -= 1
+            if nivel < 0:
+                return None
+        elif nivel == 0 and expresion.startswith("||", i):
+            suelta = True
+        i += 1
+    return suelta if nivel == 0 else None
+
+
+def _guarda(texto: str, pasos_previos: set[str], needs: set[str], inputs: set[str]) -> str | None:
+    """Por qué `texto` no es una guarda admisible; None si lo es."""
+    if not texto:
+        return "la guarda está vacía"
+    for parte in texto.split("&&"):
+        m = _COMPARACION.fullmatch(parte.strip())
+        if m is None:
+            return (f"`{parte.strip()[:80]}` no es una comparación `==`/`!=` de `steps.<id>.outputs.<nombre>`, "
+                    f"`steps.<id>.outcome`, `steps.<id>.conclusion`, `needs.<job>.result`, "
+                    f"`needs.<job>.outputs.<nombre>` o `inputs.<nombre>` con un literal")
+        if m.group("paso") and m.group("paso") not in pasos_previos:
+            return f"`steps.{m.group('paso')}` no es el `id` de un paso anterior del mismo job"
+        if m.group("job") and m.group("job") not in needs:
+            return f"`needs.{m.group('job')}` no está en el `needs` del job"
+        if m.group("input") and m.group("input") not in inputs:
+            return f"`inputs.{m.group('input')}` no es un input declarado"
+    return None
+
+
+def _if_mas_estricto(viejo, nuevo, pasos_previos: set[str], needs: set[str], inputs: set[str]) -> str | None:
+    """Por qué el `if:` nuevo de un paso con poder no es el viejo con una guarda más; None si lo es.
+
+    Admite `<guarda> && <viejo>` o `<viejo> && <guarda>`, con el viejo letra
+    por letra (entre paréntesis si trae un `||` suelto, que si no absorbería a
+    la guarda), y en un paso sin `if:` la guarda sola. La guarda es una
+    conjunción de comparaciones de un contexto que el arreglo no escribe con
+    un literal: sin funciones de estado (`always()` quita el `success()`
+    implícito), sin `||` y sin `!`, el resultado es `viejo && algo`: el paso
+    corre en un subconjunto de los casos en que corría. Estrechar no salta
+    una compuerta (esas quedan idénticas) ni añade un caso en que un paso
+    corra.
+
+    Lo que no cubre: el paso estrechado puede dejar de correr donde antes
+    corría, y lo que venga después lo ve saltado en vez de hecho. Quien
+    consume una salida suya recibe un valor nulo: lo normal es que se salte o
+    falle, pero una condición que el nulo satisface (`== ''`, `== '0'`,
+    `!= 'x'`) sigue corriendo sin ella. Eso lo juzga el segundo agente, y la
+    corrida de prueba revierte el arreglo si el paso de la huella no pasa.
+    """
+    e_nuevo = _expresion(nuevo)
+    if e_nuevo is None:
+        return "el `if:` nuevo no es una sola expresión"
+    if viejo is None:
+        return _guarda(e_nuevo, pasos_previos, needs, inputs)
+    e_viejo = _expresion(viejo)
+    suelta = _alternativa_suelta(e_viejo) if e_viejo is not None else None
+    if suelta is None:
+        return "el `if:` de partida no se puede leer como una sola expresión"
+    motivo = "la condición anterior no queda intacta con una guarda antepuesta o pospuesta con `&&`"
+    for intacto in ([f"({e_viejo})"] if suelta else [e_viejo, f"({e_viejo})"]):
+        guardas = []
+        if e_nuevo.endswith(intacto) and e_nuevo[:-len(intacto)].rstrip().endswith("&&"):
+            guardas.append(e_nuevo[:-len(intacto)].rstrip()[:-2])
+        if e_nuevo.startswith(intacto) and e_nuevo[len(intacto):].lstrip().startswith("&&"):
+            guardas.append(e_nuevo[len(intacto):].lstrip()[2:])
+        for guarda in guardas:
+            motivo = _guarda(guarda.strip(), pasos_previos, needs, inputs)
+            if motivo is None:
+                return None
+    return motivo
+
+
 def _tiempos(r: Resultado, archivo: str, wf: dict, antes: dict, tope: int) -> None:
     def revisar(donde: str, nuevo, viejo) -> None:
         if nuevo is None or nuevo == viejo:
@@ -533,7 +636,7 @@ def _tiempos(r: Resultado, archivo: str, wf: dict, antes: dict, tope: int) -> No
 
 
 def _poder_de_workflow(r: Resultado, c: Cambio, cadenas: Cadenas, repo: str, antes: Path,
-                       lint_antes: "_Lint | None", lint_despues: "_Lint | None") -> None:
+                       lint_antes: "_Lint | None", lint_despues: "_Lint | None", ifs: list[str]) -> None:
     archivo, nombre = c.ruta, c.ruta.rsplit("/", 1)[-1]
     if c.tipo != "M":
         r.falla("poder", f"{archivo}: no se crean ni se borran workflows")
@@ -618,9 +721,20 @@ def _poder_de_workflow(r: Resultado, c: Cambio, cadenas: Cadenas, repo: str, ant
             if secretos(pa) != secretos(pd):
                 r.falla("poder", f"{donde}: cambia los secretos que nombra")
             if restringido:
-                for campo in sorted((set(pa) | set(pd)) - {"run", "timeout-minutes"}):
+                for campo in sorted((set(pa) | set(pd)) - {"run", "timeout-minutes", "if"}):
                     if pa.get(campo) != pd.get(campo):
                         r.falla("poder", f"{donde}: cambia `{campo}` en un job con poder")
+                if pa.get("if") != pd.get("if"):
+                    disparo = _mapa(d.get("on"))
+                    problema = "quita su `if:`" if "if" not in pd else _if_mas_estricto(
+                        pa.get("if"), pd["if"], {str(p["id"]) for p in pasos_d[:j] if p.get("id")},
+                        set(map(str, _lista(jd.get("needs")))),
+                        {str(x) for e in ("workflow_dispatch", "workflow_call")
+                         for x in _mapa(_mapa(disparo.get(e)).get("inputs"))})
+                    if problema:
+                        r.falla("poder", f"{donde}: cambia `if` en un job con poder y no solo lo estrecha: {problema}")
+                    else:
+                        ifs.append(donde)
                 if pa.get("run") != pd.get("run"):
                     if not isinstance(pa.get("run"), lint.Texto) or not isinstance(pd.get("run"), lint.Texto):
                         r.falla("poder", f"{donde}: agrega o quita su `run:`")
@@ -639,9 +753,13 @@ def _poder_de_workflow(r: Resultado, c: Cambio, cadenas: Cadenas, repo: str, ant
 
 def _poder(r: Resultado, cambios: list[Cambio], cadenas: Cadenas, repo: str, antes: Path,
            lint_antes, lint_despues) -> None:
+    ifs: list[str] = []
     for c in cambios:
         if c.ruta.startswith(".github/") and c.ruta.endswith((".yml", ".yaml")):
-            _poder_de_workflow(r, c, cadenas, repo, antes, lint_antes, lint_despues)
+            _poder_de_workflow(r, c, cadenas, repo, antes, lint_antes, lint_despues, ifs)
+    tope = cadenas.reparacion.get("max_if_con_poder", 1)
+    if len(ifs) > tope:
+        r.falla("poder", f"estrecha el `if:` de {len(ifs)} pasos con poder (tope: {tope})")
 
 
 # --------------------------------------------------------------------------

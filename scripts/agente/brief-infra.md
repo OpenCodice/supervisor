@@ -93,7 +93,8 @@ los secretos de la organización. Se descarta entero si:
   que los tiene) cambia algo más que esto: en una línea de `run:` que el lint
   de rutas marca como rota, la carpeta desde la que se invoca al mismo script
   del repo; comillas; comentarios; `set -e…`; `mkdir -p`. Hasta __MAX_PODER__
-  líneas por paso, sin quitar ninguna;
+  líneas por paso, sin quitar ninguna. Y el `if:` de un paso, solo para
+  estrecharlo (ver abajo);
 - alguna línea nueva trae `curl`, `wget`, `nc`, `ssh`, un host o URL que no
   estaba en ese archivo, `base64`, `eval`, algo que desactive TLS, `|| true`,
   `continue-on-error`, `set +e`, `exit 0`, el nombre de un secreto o de un
@@ -109,6 +110,42 @@ los secretos de la organización. Se descarta entero si:
   o `pytest` no pasa;
 - otro agente, que no ve tu razonamiento, no confirma que el parche arregla
   esa causa sin cambiar nada más.
+
+### Estrechar el `if:` de un paso
+
+Si la causa es que un paso corre cuando no debía (su `if:` se cumple aunque se
+saltó el paso del que depende: con un paso saltado sus salidas son nulas, y en
+las expresiones de Actions `null == '0'` y `null == ''` son verdaderos), el
+arreglo es anteponerle una guarda. En un job con secretos se admite en
+__MAX_IF__ paso por arreglo, que no sea una compuerta, y solo así:
+
+```yaml
+# antes
+if: steps.altas.outputs.pendientes == '0' && env.TIENE_CLAUDE == 'true'
+# después
+if: steps.cadena.outputs.libre == 'true' && steps.altas.outputs.pendientes == '0' && env.TIENE_CLAUDE == 'true'
+```
+
+- La condición anterior queda **letra por letra** (ni un espacio distinto), y
+  la guarda va delante o detrás unida con `&&`. Si la anterior tiene un `||`
+  fuera de paréntesis, envuélvela entera: `<guarda> && (<anterior>)`.
+- La guarda es una o varias comparaciones `==` o `!=` unidas con `&&`, cada
+  una con la referencia a la izquierda y un literal entre comillas simples (o
+  `true`/`false`) a la derecha. Referencias que valen:
+  `steps.<id>.outputs.<nombre>`, `steps.<id>.outcome`, `steps.<id>.conclusion`
+  (el `id` de un paso **anterior** del mismo job), `needs.<job>.result`,
+  `needs.<job>.outputs.<nombre>` (un job del `needs` de ese job) e
+  `inputs.<nombre>` (un input declarado).
+- Nada más: ni funciones (`always()`, `!cancelled()`, `failure()`,
+  `contains(…)`, `fromJSON(…)`), ni `||`, ni `!`, ni paréntesis en la guarda,
+  ni `env.`, `secrets.`, `github.` o `vars.`.
+- Un paso sin `if:` puede ganar uno que sea solo la guarda.
+
+Solo sirve para que un paso corra **menos**. Antes de usarlo, mira qué pasos
+de después leen las salidas del que estrechas: con él saltado las reciben
+nulas, y tienen que saltarse o fallar, no seguir como si nada. Cualquier otro
+cambio de un `if:` en un job con secretos (quitarle algo, reescribirlo,
+ensancharlo) se descarta.
 
 Si pasa, se publica en main, se relanza la corrida que falló y, si el paso
 vuelve a fallar igual, tu arreglo se revierte solo. Si el arreglo correcto

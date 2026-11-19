@@ -294,6 +294,7 @@ def armar_brief(plantilla: str, reg: dict, cadenas: _cadenas.Cadenas, *, rutas: 
         "__PROHIBIDOS__": _lista_md(conf.get("prohibidos", [])),
         "__MAX_ARCHIVOS__": str(conf.get("max_archivos", 4)), "__MAX_LINEAS__": str(conf.get("max_lineas", 120)),
         "__MAX_PODER__": str(conf.get("max_lineas_paso_con_poder", 6)),
+        "__MAX_IF__": str(conf.get("max_if_con_poder", 1)),
         "__ISSUE__": ("```\n" + issue.replace("```", "` ` `") + "\n```") if issue else "(sin issue)",
         "__PREVIOS__": texto_previos, "__PUERTA__": puerta, "__LIMITE__": limite,
         "__PARCHE__": rutas.get("parche", ""), "__PARTIDA__": rutas.get("partida", ""),
