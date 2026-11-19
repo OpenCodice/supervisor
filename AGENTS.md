@@ -170,6 +170,14 @@ el reintento nunca escale.
 
 La acción `agente` lanza `reparar-infra.yml -f huella=<h>` y deja constancia en el issue de la huella.
 
+El issue de una huella dice quién la tiene, con una etiqueta de estado además de `supervisor`:
+`en-reparacion` (hay una sesión del agente), `arreglo-en-prueba` (publicado, se espera su corrida de
+prueba), `esperando-reintento` (un intento se descartó o se revirtió, o la huella revivió),
+`agotada` (no hay más intentos automáticos por ahora) y `necesita-persona` (clase `credencial`: lo
+único que el sistema no hace solo). Cada intento descartado deja además un comentario con su motivo
+y con lo que sigue. Las etiquetas son para quien lee: el reconciliador trabaja desde `estado/`, no
+desde los issues, y nada se asigna a nadie.
+
 ## El agente de infraestructura
 
 Una huella `determinista` de un workflow de `constitucion-extractor`, `fiscal-extractor` o

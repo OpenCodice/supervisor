@@ -18,6 +18,9 @@ from .observar import Cliente, ErrorApi
 from .politica import EJECUTABLES, Decision
 
 ETIQUETA = "supervisor"
+# Quién tiene la huella, dicho en el propio issue: una etiqueta de estado a la vez.
+ESTADOS_ISSUE = {"agente": "en-reparacion", "revertir": "en-reparacion", "agotada": "agotada",
+                 "revivir": "esperando-reintento"}
 
 
 def describir(d: Decision) -> str:
@@ -104,17 +107,30 @@ class Actor:
         if not numero:
             abiertos = self.cliente.paginas(f"repos/{self.repo_propio}/issues", state="open", labels=ETIQUETA)
             numero = next((i["number"] for i in abiertos if i["title"].startswith(f"[{d.huella}]")), None)
+        # Una credencial por renovar es lo único que el sistema no puede hacer solo.
+        estado = "necesita-persona" if d.clase == "credencial" else ESTADOS_ISSUE.get(d.accion)
         if numero:
+            self._etiquetar(numero, estado)
             self.cliente.post(f"repos/{self.repo_propio}/issues/{numero}/comments", {"body": cuerpo})
             return numero
-        return self.cliente.post(f"repos/{self.repo_propio}/issues",
-                                 {"title": titulo, "body": cuerpo, "labels": [ETIQUETA]})["number"]
+        return self.cliente.post(f"repos/{self.repo_propio}/issues", {
+            "title": titulo, "body": cuerpo, "labels": [ETIQUETA] + ([estado] if estado else [])})["number"]
+
+    def _etiquetar(self, numero: int, estado: str | None) -> None:
+        if not estado:
+            return
+        try:
+            self.cliente.patch(f"repos/{self.repo_propio}/issues/{numero}", {"labels": [ETIQUETA, estado]})
+        except ErrorApi:
+            # La etiqueta es para quien lee el issue: sin ella la huella sigue su curso.
+            pass
 
     def _revivir(self, d: Decision) -> dict:
         """El aviso va en el issue que la huella ya tiene: revivir no abre otro."""
         det = d.detalle
         if not det.get("issue"):
             return {}
+        self._etiquetar(det["issue"], ESTADOS_ISSUE["revivir"])
         try:
             self.cliente.post(f"repos/{self.repo_propio}/issues/{det['issue']}/comments", {"body": (
                 f"**Vuelve al agente de infraestructura** ({det['veces']} de {det['tope']}): {det['por']}. "

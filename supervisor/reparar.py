@@ -762,14 +762,41 @@ def relanzar_prueba(cliente, cadenas: _cadenas.Cadenas, reg: dict, acciones: lis
     return {"lanzada": True, "repo": wf.repo, "workflow": wf.archivo, "inputs": detalle["inputs"]}
 
 
-def comentar(cliente, cadenas: _cadenas.Cadenas, reg: dict, texto: str) -> None:
-    if not reg.get("issue"):
-        return
+def issue_de(cliente, repo: str, reg: dict) -> int | None:
+    """El issue de la huella. El reconciliador lo abre en la misma vuelta en que lanza la sesión, y esa
+    vuelta guarda su estado después: la sesión puede haber leído un registro que aún no lo trae."""
+    if reg.get("issue"):
+        return int(reg["issue"])
+    abiertos = cliente.paginas(f"{repo}/issues", state="open", labels=ETIQUETA)
+    return next((i["number"] for i in abiertos if str(i.get("title") or "").startswith(f"[{reg['huella']}]")
+                 and "pull_request" not in i), None)
+
+
+def comentar(cliente, cadenas: _cadenas.Cadenas, reg: dict, texto: str, estado: str | None = None) -> None:
+    """Deja `texto` en el issue de la huella y, con `estado`, su etiqueta de quién la tiene ahora."""
+    repo = f"repos/{cadenas.org}/{cadenas.general['repo_supervisor']}"
     try:
-        cliente.post(f"repos/{cadenas.org}/{cadenas.general['repo_supervisor']}/issues/{int(reg['issue'])}/comments",
-                     {"body": texto})
+        numero = issue_de(cliente, repo, reg)
+        if numero is None:
+            print(f"::warning::La huella {reg['huella']} no tiene issue: el resultado queda solo en el estado.")
+            return
+        cliente.post(f"{repo}/issues/{numero}/comments", {"body": texto})
+        if estado:
+            cliente.patch(f"{repo}/issues/{numero}", {"labels": [ETIQUETA, estado]})
     except ErrorApi as e:
-        print(f"::warning::No se pudo comentar el issue #{reg['issue']}: {e.estado}")
+        print(f"::warning::No se pudo dejar el resultado en el issue de la huella {reg['huella']}: {e.estado}")
+
+
+def lo_que_sigue(definitivo: bool, cadenas: _cadenas.Cadenas) -> str:
+    """Qué pasa con la huella tras un intento descartado, para quien lee el issue."""
+    vuelve = "si cambia el workflow, cambian las compuertas o pasa una semana"
+    if definitivo:
+        return (f"**Qué sigue**: no hay otro intento automático por ahora; vuelve al agente solo {vuelve}. "
+                "Lo que haría falta para arreglarla está arriba, en el motivo.")
+    tope = cadenas.politica.get("intentos_agente_por_huella", 2)
+    return (f"**Qué sigue**: lo decide el supervisor en su siguiente vuelta. Si la falla sigue apareciendo y al "
+            f"agente le quedan intentos (a lo más {tope} por huella), lanza otro; si no, queda agotada y vuelve "
+            f"al agente solo {vuelve}.")
 
 
 def _corrida_url() -> str:
@@ -857,7 +884,7 @@ def publicar(args, cadenas: _cadenas.Cadenas, ahora: datetime) -> int:
                     f"**Arreglo publicado** por el agente de infraestructura: {enlace}\n\n"
                     f"Causa: {veredicto.get('causa_raiz') or '—'}\n\nPasó las compuertas deterministas y el juez. "
                     f"Si la corrida de prueba no pasa el paso antes de {prueba['vence']}, se revierte solo.\n\n"
-                    f"Sesión: {_corrida_url()}"))
+                    f"Sesión: {_corrida_url()}"), "arreglo-en-prueba")
         if not se_publica:
             fallas = [(f.get("compuerta"), f.get("detalle")) for f in ((compuertas or {}).get("fallas") or [])[:8]]
             linea = linea_de("descartado", reg["huella"], {"motivo": motivo[:1500], "definitivo": definitivo,
@@ -866,7 +893,9 @@ def publicar(args, cadenas: _cadenas.Cadenas, ahora: datetime) -> int:
                 print("::error::No se pudo anotar el descarte.")
                 codigo = 1
             resumen.append(f"**Descartado**: {motivo}")
-            comentar(propio, cadenas, reg, f"**Intento descartado**: {motivo}\n\nSesión: {_corrida_url()}")
+            comentar(propio, cadenas, reg, (
+                f"**Intento descartado**: {motivo}\n\n{lo_que_sigue(definitivo, cadenas)}\n\n"
+                f"Sesión: {_corrida_url()}"), "esperando-reintento")
     texto = "\n".join(resumen) + "\n"
     print(texto)
     if os.environ.get("GITHUB_STEP_SUMMARY"):
@@ -1024,7 +1053,7 @@ def revertir(args, cadenas: _cadenas.Cadenas) -> int:
         linea = linea_de("revertido", args.huella, {"repo": vigente["detalle"]["repo"], **hecho})
         comentar(propio, cadenas, reg, (
             f"**Arreglo revertido**: `{args.sha[:12]}` no pasó su corrida de prueba; "
-            f"revert `{hecho['commit_revert'][:12]}`.\n\nSesión: {_corrida_url()}"))
+            f"revert `{hecho['commit_revert'][:12]}`.\n\nSesión: {_corrida_url()}"), "esperando-reintento")
         print(f"Revertido {args.sha[:12]} con {hecho['commit_revert'][:12]}.")
     if not anotar(raiz, linea):
         print("::error::No se pudo anotar el resultado de la reversión.")
