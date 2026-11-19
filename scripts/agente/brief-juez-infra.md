@@ -45,6 +45,26 @@ cada una se contesta `si` o `no`:
    con secretos ejecute algo distinto de lo que ejecutaba? Ante cualquier duda
    razonable, `si`.
 
+   Un caso pide mirar más de cerca: el parche le antepone una guarda al `if:`
+   del paso que fallaba, para que corra menos. No es esconder la falla si la
+   guarda **dice la causa**: el paso corría sin que existiera lo que necesita
+   (se saltó el paso que lo prepara, y su condición se cumplía igual porque
+   una salida nula compara como `''` o `'0'`), y en esos casos no tenía nada
+   que hacer. Sí lo es, y la respuesta es `si`, si ocurre cualquiera de estas:
+   - el paso que deja de correr era el que detectaba o reportaba el problema
+     (una comprobación, una validación, el que anota un resultado o un
+     intento);
+   - lo que se salta es trabajo que sí debía hacerse en ese caso: la guarda
+     no describe una situación en la que el paso sobra, solo la situación en
+     la que falla;
+   - con el paso saltado, algún paso posterior sigue adelante sin lo que este
+     producía (lee una salida suya con una condición que el valor nulo
+     cumple, o no la comprueba) en vez de saltarse también o fallar.
+   Compruébalo en el archivo de partida: qué paso prepara lo que faltaba, en
+   qué casos se salta, y qué hace cada paso posterior que nombra al que se
+   estrecha. Si no puedes comprobarlo, `si`. Lo demás de esta pregunta vale
+   igual para ese parche.
+
 Solo entra con `si`, `no`, `no`. Un «no entra» equivocado cuesta un intento;
 un «entra» equivocado puede publicar ley falsa o regalar un token.
 
