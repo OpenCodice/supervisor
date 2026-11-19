@@ -5,6 +5,7 @@ from datetime import timedelta
 from conftest import AHORA, con_horario, corrida, falla, job, t, titulo
 
 from supervisor import invariantes as inv
+from supervisor import politica as pol
 from supervisor.invariantes import instante, iso
 
 FE = "fiscal-extractor"
@@ -632,6 +633,77 @@ def test_la_ronda_semanal_se_lanza_cuando_la_cadena_queda_libre(cadenas, foto_sa
     semanal = _en(corrida(ronda.archivo, titulo=titulo(ronda, origen="supervisor")), "2026-11-26T15:50:10Z")
     assert not mundo.de(vuelta(foto_sana((FE, semanal)), "2026-11-26T16:05:00Z"), "I1")
     assert len(mundo.cliente.lanzamientos()) == 2
+
+
+def test_la_ronda_espera_a_la_vigilancia_que_se_lanza_en_la_misma_vuelta(cadenas, foto_sana, mundo):
+    """El 2026-11-18 a las 16:00 una vuelta lanzó la vigilancia pedida y, con la cadena libre en la foto, la ronda."""
+    from supervisor.__main__ import correr
+    from supervisor.actuar import Actor
+    from supervisor.estado import Estado
+    con = con_horario(cadenas, "expandir-estatales.yml")
+    wf, ronda = con.workflow(FE, VLE), con.workflow(FE, "expandir-estatales.yml")
+    destinos = lambda: [destino for destino, _ in mundo.cliente.lanzamientos()]  # noqa: E731
+
+    def vuelta(foto, cuando):
+        estado = Estado(mundo.carpeta)
+        r = correr(foto, con, estado, instante(cuando), Actor(mundo.cliente, con, "actuar"))
+        r["guardado"] = estado.guardar()
+        return r
+
+    pide = (FE, _en(_pide(wf, [{"workflow": VLE, "inputs": {"estados": "colima"}}], estados="jalisco"), "2026-11-25T15:00:00Z"))
+    r = vuelta(foto_sana(pide), "2026-11-25T15:35:00Z")
+    assert mundo.de(r, "I12")[0].accion == "lanzar"
+    [d] = mundo.de(r, "I1")
+    assert d.accion == "esperar" and "se lanza en esta misma vuelta" in d.motivo
+    assert destinos() == [DESTINO]
+    # La misma foto otra vez (la corrida lanzada todavía no aparece en la lista): nada nuevo, y la ronda sigue esperando.
+    for minutos in (36, 50):
+        r = vuelta(foto_sana(pide), f"2026-11-25T15:{minutos}:00Z")
+        [d] = mundo.de(r, "I1")
+        assert d.accion == "esperar" and "su corrida todavía no aparece" in d.motivo
+        assert not [x for x in r["decisiones"] if x.accion in pol.EJECUTABLES]
+    assert destinos() == [DESTINO]
+    # La vuelta siguiente ya ve la vigilancia viva: la ronda sigue esperando, ahora por la foto.
+    viva_ = (FE, _en(corrida(VLE, None, titulo=titulo(wf, estados="colima", origen="supervisor")), "2026-11-25T15:35:20Z"))
+    [d] = mundo.de(vuelta(foto_sana(pide, viva_), "2026-11-25T16:05:00Z"), "I1")
+    assert d.accion == "esperar" and "en curso o en espera" in d.motivo and destinos() == [DESTINO]
+    # Terminó: la cadena está libre y la ronda se lanza, una sola vez.
+    hecha = (FE, _en(corrida(VLE, titulo=titulo(wf, estados="colima", origen="supervisor"),
+                             jobs=[job("vigilar"), job("estado pendiente=[false]")]), "2026-11-25T15:35:20Z"))
+    r = vuelta(foto_sana(pide, hecha), "2026-11-25T16:20:00Z")
+    assert mundo.de(r, "I1")[0].accion == "lanzar"
+    assert destinos() == [DESTINO, f"{FE}/expandir-estatales.yml"]
+    r = vuelta(foto_sana(pide, hecha), "2026-11-25T16:21:00Z")
+    assert not [x for x in r["decisiones"] if x.accion in pol.EJECUTABLES] and len(destinos()) == 2
+
+
+def test_la_ronda_espera_aunque_la_vigilancia_se_decida_despues(cadenas, foto_sana):
+    """El orden de evaluación no importa: la cadencia de la vigilancia se decide después que la cita de la ronda."""
+    import dataclasses
+    con = dataclasses.replace(cadenas, workflows=tuple(
+        dataclasses.replace(w, lanza_horario=w.archivo == "expandir-estatales.yml", cadencias=w.cadencias if w.archivo == VLE else ())
+        for w in cadenas.workflows))
+    ahora = instante("2026-11-25T15:35:00Z")
+    foto = foto_sana(sin=((FE, VLE),))
+    hallazgos = [h for h in inv.evaluar(foto, con, ahora) if h.workflow in (VLE, "expandir-estatales.yml")]
+    assert sorted(h.workflow for h in hallazgos) == ["expandir-estatales.yml", VLE]
+    for orden in (hallazgos, hallazgos[::-1]):
+        acciones = {d.hallazgo.workflow: (d.accion, d.motivo) for d in pol.decidir(orden, {}, [], foto, con, ahora)}
+        assert acciones[VLE][0] == "lanzar"
+        assert acciones["expandir-estatales.yml"] == ("esperar", f"se lanza cuando la cadena quede libre: {VLE} se lanza en esta misma vuelta")
+    # Un lanzamiento que falló no ocupa la cadena, ni uno de antes de la gracia, ni el de otro workflow.
+    ronda = [h for h in hallazgos if h.workflow == "expandir-estatales.yml"]
+    libre = foto_sana()
+    linea = {"accion": "lanzar", "cuando": "2026-11-25T15:20:00Z", "resultado": "ok", "huella": "x",
+             "detalle": {"repo": FE, "workflow": VLE, "inputs": {}}}
+    decide = lambda *acciones: pol.decidir(ronda, {}, list(acciones), libre, con, ahora)[0].accion  # noqa: E731
+    assert decide(linea) == "esperar"
+    assert decide(linea | {"resultado": "error: HTTP 422"}) == "lanzar"
+    assert decide(linea | {"cuando": "2026-11-25T15:00:00Z"}) == "lanzar"
+    assert decide(linea | {"detalle": {"repo": FE, "workflow": "vigilar-federal.yml"}}) == "lanzar"
+    assert decide(linea | {"accion": "cancelar-y-relanzar", "detalle": linea["detalle"] | {"relanzar": False}}) == "lanzar"
+    assert decide({"accion": "arreglo-publicado", "cuando": "2026-11-25T15:20:00Z", "resultado": "ok", "huella": "x",
+                   "detalle": {"repo": FE, "workflow": VLE, "prueba": {"lanzada": True}}}) == "esperar"
 
 
 # ---- I8 sin el aviso de los workflows ----

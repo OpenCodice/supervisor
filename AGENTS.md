@@ -70,6 +70,9 @@ respaldo. El contexto del proyecto está en el `AGENTS.md` de la raíz del espac
   significa otra cosa en cada cron. Un workflow con `espera_libre` se lanza por horario solo cuando los
   workflows que nombra no tienen corridas vivas ni PR automático abierto, y su cita no caduca hasta la
   siguiente (la ronda de expansión con la cadena de leyes estatales); las rondas que se piden no esperan.
+  También cuenta como ocupada la cadena que el propio supervisor acaba de lanzar y la foto todavía no
+  trae: en esta misma vuelta (por eso estas citas se deciden al final, después de todo lo demás) o
+  dentro de `gracia_lanzamiento_min` sin que su corrida aparezca (`politica._ocupada_fuera_de_la_foto`).
 - **Por petición (I12).** `observar.py` baja el artefacto `cadena` de cada corrida terminada de un
   workflow `encadenado` o con `puede_pedir` (una llamada por repo para listarlos y una descarga por
   corrida, que se guarda: cada corrida se baja una sola vez; `max_cadenas_por_vuelta` acota la primera

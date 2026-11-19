@@ -65,7 +65,8 @@ minuto 0 («solo pedir») y a las 18:00 la que publica; las credenciales, los lu
 hora» es el primer tic dentro de la tolerancia (180 minutos); después lo retoma la cadencia. Solo cuenta
 la cita más reciente: si faltaron tres horas de congreso se lanza una corrida, no tres. La ronda de
 expansión, además, espera a que la cadena de leyes estatales esté libre (sin corridas vivas ni PR
-abierto) y su cita no caduca hasta la siguiente.
+abierto, y sin un lanzamiento del supervisor en esa misma vuelta o tan reciente que su corrida todavía
+no aparece) y su cita no caduca hasta la siguiente.
 
 **Peticiones.** Un paso que necesita que corra algo después lo pide: escribe una salida del job cuyo
 nombre empieza por `pedir`, con `{"workflow": "<archivo.yml>", "inputs": {…}, "repo": "<otro repo>"}`

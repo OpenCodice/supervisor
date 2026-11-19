@@ -206,6 +206,25 @@ def _gracia(v: _Vuelta) -> timedelta:
     return timedelta(minutes=v.cadenas.politica.get("gracia_lanzamiento_min", 30))
 
 
+def _ocupada_fuera_de_la_foto(v: _Vuelta, wf: Workflow) -> str | None:
+    """Para quien declara `espera_libre`: la cadena a la que espera, ocupada por un lanzamiento que la
+    foto todavía no trae (uno de esta misma vuelta, o uno reciente cuya corrida aún no aparece)."""
+    for otro in wf.espera_libre:
+        if any((repo, archivo) == (wf.repo, otro) for repo, archivo, _ in v.lanzados):
+            return f"{otro} se lanza en esta misma vuelta"
+        corridas = inv.corridas_de(v.foto, wf.repo, otro)
+        for a in v.acciones:
+            det = a.get("detalle") or {}
+            if a.get("resultado") != "ok" or (det.get("repo"), det.get("workflow")) != (wf.repo, otro):
+                continue
+            lanzo = (det.get("relanzar", True) if a.get("accion") in LANZAN
+                     else a.get("accion") == "arreglo-publicado" and (det.get("prueba") or {}).get("lanzada"))
+            cuando = instante(a["cuando"])
+            if lanzo and v.ahora - cuando < _gracia(v) and not any(instante(c["created_at"]) >= cuando for c in corridas):
+                return f"{otro} se lanzó a las {a['cuando']} y su corrida todavía no aparece"
+    return None
+
+
 def _agotar(d: Decision, motivo: str) -> Decision:
     """Constancia pública, una sola vez por motivo."""
     if d.registro["estado"] == "agotada" and d.registro.get("motivo") == motivo:
@@ -519,8 +538,9 @@ def _lanzar(v: _Vuelta, d: Decision, wf: Workflow | None, espera_h: float, accio
         d.accion = "esperar"
         d.motivo = f"el PR #{numero} de {repo_datos} sigue abierto: se lanza cuando se fusione (o cuando I5 lo cierre)"
         return d
-    if h.extra.get("ocupada"):
-        d.accion, d.motivo = "esperar", f"se lanza cuando la cadena quede libre: {h.extra['ocupada']}"
+    ocupada = h.extra.get("ocupada") or (_ocupada_fuera_de_la_foto(v, wf) if h.extra.get("horario") else None)
+    if ocupada:
+        d.accion, d.motivo = "esperar", f"se lanza cuando la cadena quede libre: {ocupada}"
         return d
     if h.cuando:
         listo = instante(h.cuando) + timedelta(hours=espera_h)
@@ -704,73 +724,89 @@ def _se_ve(foto: dict, reg: dict) -> bool:
 # Entrada
 # --------------------------------------------------------------------------
 
+def _espera_a_otra(h: Hallazgo, cadenas: Cadenas) -> bool:
+    wf = cadenas.workflow(h.repo, h.workflow) if h.workflow else None
+    return bool(h.invariante == "I1" and h.extra.get("horario") and wf is not None and wf.espera_libre)
+
+
+def _tratar(v: _Vuelta, h: Hallazgo, decisiones: list[Decision]) -> Decision:
+    """La decisión de un hallazgo, sabiendo lo que ya se decidió en esta vuelta."""
+    cadenas, huellas, ahora = v.cadenas, v.huellas, v.ahora
+    wf = cadenas.workflow(h.repo, h.workflow) if h.workflow else None
+    ident = identificar(h)
+    clase = clasificar(h.falla, wf, cadenas) if h.invariante in ("I2", "I11") else None
+    if h.invariante == "I10":
+        clase = "determinista"
+    elif h.invariante == "I13":
+        clase = "credencial"
+    elif h.extra.get("rechazada"):
+        clase = "rechazada"
+    d = Decision(huella=ident, accion="nada", motivo="", hallazgo=h, clase=clase)
+    if ident in v.tratadas:
+        d.accion, d.motivo = "esperar", f"la misma huella ya se trata en {v.tratadas[ident]}"
+        return d
+    v.tratadas[ident] = h.objeto
+    d.registro = _registro(h, ident, clase, huellas.get(ident), ahora)
+    if _asimilar(v, d):
+        pass  # cambió de estado por lo que anotó reparar-infra: se actúa en la vuelta siguiente
+    elif d.registro["estado"] in EN_REPARACION:
+        d.clase = d.registro["clase"] = huellas[ident].get("clase") or clase
+        _reparacion(v, d)
+    elif h.invariante == "I2":
+        _falla(v, d, wf)
+    elif h.invariante == "I11":
+        _cronico(v, d)
+    elif h.invariante == "I5":
+        _pr(v, d)
+    elif h.invariante == "I4":
+        _atorada(v, d, wf)
+    elif h.invariante == "I8":
+        _lanzar(v, d, wf, 0, accion="desplegar-web")
+    elif h.invariante == "I1":
+        # Una falla del mismo workflow que espera su reintento manda: la cadencia no se salta esa espera.
+        # Tampoco insiste si falló por una credencial por renovar: relanzarlo no la renueva.
+        # Lo que toca por horario no espera a nadie: cada cita se lanza a su hora.
+        dueno = None if h.extra.get("horario") else next((
+            o for o in decisiones if o.hallazgo is not None and (o.accion == "esperar" or o.clase == "credencial")
+            and o.hallazgo.invariante in ("I2", "I3", "I6", "I7", "I12")
+            and (o.hallazgo.repo, o.hallazgo.workflow) == (h.repo, h.workflow)
+            and (o.hallazgo.inputs is None or inv.abarca(o.hallazgo.inputs, h.inputs, wf))), None)
+        if dueno is not None and not h.en_vuelo:
+            d.accion, d.motivo, d.proxima = "esperar", f"lo lleva la huella {dueno.huella}", dueno.proxima
+        else:
+            _lanzar(v, d, wf, 0, repeticion_h=cadenas.politica.get("espera_cadencia_h", [1, 6, 24]))
+    elif h.invariante == "I9":
+        _agotar(d, h.motivo)
+    elif h.invariante == "I10":
+        # El motivo de la constancia no lleva las cuentas del sitio, que cambian en cada vuelta.
+        _agotar(d, "el sitio no avanza en el Worker: es un defecto del Worker, no la falla de una corrida, "
+                   "y el agente de infraestructura no lo toma")
+    elif h.invariante == "I13":
+        _credencial(v, d)
+    elif h.extra.get("rechazada"):
+        _agotar(d, h.extra["rechazada"])
+    else:
+        _lanzar(v, d, wf, 0)
+    return d
+
+
 def decidir(hallazgos: list[Hallazgo], huellas: dict, acciones: list, foto: dict,
             cadenas: Cadenas, ahora: datetime) -> list[Decision]:
     """Una decisión por hallazgo, más las que salen del estado (resueltas, pendientes, ciclos)."""
     v = _Vuelta(foto=foto, cadenas=cadenas, ahora=ahora, huellas=huellas, acciones=acciones)
     decisiones: list[Decision] = []
     orden = {nombre: n for n, nombre in enumerate(_ORDEN)}
-    for h in sorted(hallazgos, key=lambda h: (orden.get(h.invariante, 99), h.repo, h.objeto)):
-        wf = cadenas.workflow(h.repo, h.workflow) if h.workflow else None
-        ident = identificar(h)
-        clase = clasificar(h.falla, wf, cadenas) if h.invariante in ("I2", "I11") else None
-        if h.invariante == "I10":
-            clase = "determinista"
-        elif h.invariante == "I13":
-            clase = "credencial"
-        elif h.extra.get("rechazada"):
-            clase = "rechazada"
-        d = Decision(huella=ident, accion="nada", motivo="", hallazgo=h, clase=clase)
-        if ident in v.tratadas:
-            d.accion, d.motivo = "esperar", f"la misma huella ya se trata en {v.tratadas[ident]}"
-            decisiones.append(d)
-            continue
-        v.tratadas[ident] = h.objeto
-        d.registro = _registro(h, ident, clase, huellas.get(ident), ahora)
-        if _asimilar(v, d):
-            pass  # cambió de estado por lo que anotó reparar-infra: se actúa en la vuelta siguiente
-        elif d.registro["estado"] in EN_REPARACION:
-            d.clase = d.registro["clase"] = huellas[ident].get("clase") or clase
-            _reparacion(v, d)
-        elif h.invariante == "I2":
-            _falla(v, d, wf)
-        elif h.invariante == "I11":
-            _cronico(v, d)
-        elif h.invariante == "I5":
-            _pr(v, d)
-        elif h.invariante == "I4":
-            _atorada(v, d, wf)
-        elif h.invariante == "I8":
-            _lanzar(v, d, wf, 0, accion="desplegar-web")
-        elif h.invariante == "I1":
-            # Una falla del mismo workflow que espera su reintento manda: la cadencia no se salta esa espera.
-            # Tampoco insiste si falló por una credencial por renovar: relanzarlo no la renueva.
-            # Lo que toca por horario no espera a nadie: cada cita se lanza a su hora.
-            dueno = None if h.extra.get("horario") else next((
-                o for o in decisiones if o.hallazgo is not None and (o.accion == "esperar" or o.clase == "credencial")
-                and o.hallazgo.invariante in ("I2", "I3", "I6", "I7", "I12")
-                and (o.hallazgo.repo, o.hallazgo.workflow) == (h.repo, h.workflow)
-                and (o.hallazgo.inputs is None or inv.abarca(o.hallazgo.inputs, h.inputs, wf))), None)
-            if dueno is not None and not h.en_vuelo:
-                d.accion, d.motivo, d.proxima = "esperar", f"lo lleva la huella {dueno.huella}", dueno.proxima
-            else:
-                _lanzar(v, d, wf, 0, repeticion_h=cadenas.politica.get("espera_cadencia_h", [1, 6, 24]))
-        elif h.invariante == "I9":
-            _agotar(d, h.motivo)
-        elif h.invariante == "I10":
-            # El motivo de la constancia no lleva las cuentas del sitio, que cambian en cada vuelta.
-            _agotar(d, "el sitio no avanza en el Worker: es un defecto del Worker, no la falla de una corrida, "
-                       "y el agente de infraestructura no lo toma")
-        elif h.invariante == "I13":
-            _credencial(v, d)
-        elif h.extra.get("rechazada"):
-            _agotar(d, h.extra["rechazada"])
-        else:
-            _lanzar(v, d, wf, 0)
-        decisiones.append(d)
+    ordenados = sorted(hallazgos, key=lambda h: (orden.get(h.invariante, 99), h.repo, h.objeto))
+    # Quien espera a que otra cadena quede libre se decide al final, cuando ya se sabe todo lo que esta
+    # vuelta lanza: así no depende del orden en que salgan los hallazgos.
+    al_final = [h for h in ordenados if _espera_a_otra(h, cadenas)]
+    aplazadas = {identificar(h) for h in al_final}
+    for h in ordenados:
+        if identificar(h) not in aplazadas:
+            decisiones.append(_tratar(v, h, decisiones))
 
     for ident, reg in huellas.items():
-        if ident in v.tratadas or reg.get("invariante") == "ciclo" or not _se_ve(foto, reg):
+        if ident in v.tratadas or ident in aplazadas or reg.get("invariante") == "ciclo" or not _se_ve(foto, reg):
             continue
         sin_leer = any(a.get("huella") == ident and a.get("accion") in EVENTOS
                        and a["cuando"] > (reg.get("evento_visto") or "") for a in acciones)
@@ -789,6 +825,9 @@ def decidir(hallazgos: list[Hallazgo], huellas: dict, acciones: list, foto: dict
                 huella=ident, accion="nada", motivo="resuelta: ya no aparece",
                 registro=dict(reg) | {"estado": "resuelta", "resuelta": iso(ahora)},
                 detalle={"issue": reg.get("issue")} if reg.get("issue") else {}))
+
+    for h in al_final:
+        decisiones.append(_tratar(v, h, decisiones))
 
     decisiones.extend(v.ciclos.values())
     for ident, reg in huellas.items():
