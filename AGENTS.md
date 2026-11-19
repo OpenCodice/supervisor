@@ -175,7 +175,9 @@ El issue de una huella dice quién la tiene, con una etiqueta de estado además 
 prueba), `esperando-reintento` (un intento se descartó o se revirtió, o la huella revivió),
 `agotada` (no hay más intentos automáticos por ahora) y `necesita-persona` (clase `credencial`: lo
 único que el sistema no hace solo). Cada intento descartado deja además un comentario con su motivo
-y con lo que sigue. Las etiquetas son para quien lee: el reconciliador trabaja desde `estado/`, no
+y con lo que sigue. Arriba del cuerpo, el bloque «En qué va» lleva la situación (en progreso, en
+espera, detenida), el motivo de la última decisión, hasta cuándo se espera el siguiente paso y los
+intentos del agente gastados; el reconciliador lo reescribe solo cuando cambia. Todo esto es para quien lee: el reconciliador trabaja desde `estado/`, no
 desde los issues, y nada se asigna a nadie.
 
 ## El agente de infraestructura

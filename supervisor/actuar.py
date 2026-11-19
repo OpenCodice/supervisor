@@ -23,6 +23,27 @@ ESTADOS_ISSUE = {"agente": "en-reparacion", "revertir": "en-reparacion", "agotad
                  "revivir": "esperando-reintento"}
 
 
+MARCA = ("<!-- estado -->", "<!-- /estado -->")
+
+
+def situacion(d: Decision, registro: dict) -> str:
+    """En una frase, si alguien tiene la huella ahora mismo."""
+    estado = registro.get("estado")
+    if d.clase == "credencial":
+        return "necesita a una persona (una credencial por renovar)"
+    if estado == "en-reparacion":
+        return "en progreso: el agente de infraestructura está trabajando en ella"
+    if estado == "arreglo-publicado":
+        return "en progreso: hay un arreglo publicado y se espera su corrida de prueba"
+    if estado == "agotada":
+        return "detenida: no hay más intentos automáticos por ahora"
+    if d.accion in ("lanzar", "cancelar-y-relanzar"):
+        return "en progreso: se relanzó la corrida"
+    if d.accion == "esperar":
+        return "en espera"
+    return "abierta"
+
+
 def describir(d: Decision) -> str:
     """Una línea legible de lo que la acción hace (o haría)."""
     det = d.detalle
@@ -140,6 +161,34 @@ class Actor:
             # Sin el comentario la huella revive igual: la constancia queda en la bitácora.
             return {"comentario": str(e)}
         return {}
+
+    def estado_del_issue(self, d: Decision, registro: dict | None, ahora: datetime) -> None:
+        """Mantiene en el cuerpo del issue de la huella en qué va, a qué espera y hasta cuándo.
+
+        Lo ya escrito se lee del propio issue y solo se reescribe cuando cambia: no pasa por el estado,
+        así que una vuelta que no decide nada nuevo tampoco lo modifica.
+        """
+        if self.modo != "actuar" or not registro or not registro.get("issue") or registro.get("estado") == "resuelta":
+            return
+        lineas = [f"- **Situación**: {situacion(d, registro)}", f"- **Motivo**: {d.motivo}"]
+        if d.proxima:
+            lineas.append(f"- **Siguiente paso**: a más tardar {d.proxima}")
+        if registro.get("workflow") and registro.get("clase") == "determinista":
+            tope = self.cadenas.politica.get("intentos_agente_por_huella", 2)
+            lineas.append(f"- **Intentos del agente**: {registro.get('intentos_agente', 0)} de {tope}")
+        clave = "\n".join(lineas)
+        ruta = f"repos/{self.repo_propio}/issues/{registro['issue']}"
+        try:
+            cuerpo = str((self.cliente.get(ruta) or {}).get("body") or "")
+            antes, marca, resto = cuerpo.partition(MARCA[0])
+            escrito, _, resto = resto.partition(MARCA[1])
+            if marca and clave in escrito:
+                return
+            bloque = f"{MARCA[0]}\n### En qué va\n{clave}\n- **Desde**: {iso(ahora)}\n{MARCA[1]}"
+            self.cliente.patch(ruta, {"body": f"{bloque}\n\n{(antes + resto).strip()}\n"})
+        except ErrorApi:
+            # Es para quien lee el issue; la vuelta siguiente lo vuelve a intentar.
+            pass
 
     def cerrar_constancia(self, numero: int, motivo: str) -> None:
         self.cliente.post(f"repos/{self.repo_propio}/issues/{numero}/comments", {"body": motivo})

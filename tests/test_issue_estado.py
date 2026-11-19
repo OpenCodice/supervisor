@@ -52,3 +52,19 @@ def test_la_constancia_lleva_la_etiqueta_de_su_estado(cadenas, foto_sana, mundo)
     caso(cadenas, foto_sana, mundo, mundo.carpeta.parent)
     assert etiquetas and etiquetas[0] == [ETIQUETA, "agotada"]
     assert any(m == "PATCH" and (c or {}).get("labels") == [ETIQUETA, "en-reparacion"] for m, _, c in mundo.cliente.llamadas)
+
+
+def test_el_issue_dice_en_que_va_y_solo_se_reescribe_cuando_cambia(cadenas, foto_sana, mundo):
+    from test_politica_reparacion import hasta_el_agente, minutos
+    wf, base, h = hasta_el_agente(cadenas, foto_sana, mundo)
+    mundo.vuelta(foto_sana(*base), minutos(15))
+    ruta = f"{REPO}/issues/1"
+    mundo.cliente.cuerpos[ruta] = "**Huella** `x`\nConstancia pública del supervisor; no es una asignación."
+    mundo.vuelta(foto_sana(*base), minutos(30))
+    cuerpo = mundo.cliente.cuerpos[ruta]
+    assert cuerpo.startswith("<!-- estado -->\n### En qué va\n- **Situación**: en progreso: el agente")
+    assert "reparar-infra está trabajando" in cuerpo and "- **Siguiente paso**: a más tardar " in cuerpo
+    assert "- **Intentos del agente**: 0 de 2" in cuerpo and cuerpo.rstrip().endswith("no es una asignación.")
+    # Otra vuelta igual no lo toca: el «Desde» sigue siendo el de cuando cambió.
+    mundo.vuelta(foto_sana(*base), minutos(45))
+    assert mundo.cliente.cuerpos[ruta] == cuerpo and cuerpo.count("<!-- estado -->") == 1

@@ -130,12 +130,18 @@ class ClienteFalso:
         self.llamadas: list[tuple] = []
         self.falla_en = falla_en
         self.issues = 0
+        self.cuerpos: dict[str, str] = {}
+        self.lecturas: list[str] = []
 
     def _anotar(self, metodo, ruta, cuerpo=None):
         self.llamadas.append((metodo, ruta, cuerpo))
         if self.falla_en and self.falla_en in ruta:
             from supervisor.observar import ErrorApi
             raise ErrorApi(422, metodo, ruta, "falla simulada")
+
+    def get(self, ruta, **params):
+        self.lecturas.append(ruta)
+        return {"body": self.cuerpos.get(ruta, "")}
 
     def post(self, ruta, cuerpo=None):
         self._anotar("POST", ruta, cuerpo)
@@ -145,6 +151,10 @@ class ClienteFalso:
         return None
 
     def patch(self, ruta, cuerpo):
+        if "body" in cuerpo:
+            # El «En qué va» del issue no es una acción: se lleva aparte de `llamadas`.
+            self.cuerpos[ruta] = cuerpo["body"]
+            return {}
         self._anotar("PATCH", ruta, cuerpo)
         return {}
 

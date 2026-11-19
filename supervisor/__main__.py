@@ -38,6 +38,7 @@ def correr(foto: dict, cadenas: _cadenas.Cadenas, estado: Estado, ahora: datetim
                 registro = aplicar(registro, d.efecto)
             else:
                 registro = aplicar(registro, {"ultima_accion": iso(ahora), "+errores": 1})
+        actor.estado_del_issue(d, registro, ahora)
         if registro is not None:
             estado.anotar_huella(registro)
 
