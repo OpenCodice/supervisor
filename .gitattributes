@@ -1,3 +1,4 @@
-# Dos workflows agregan líneas a estos archivos (supervisor.yml y reparar-infra.yml):
-# al rebasar se conservan las de los dos.
-estado/*.jsonl merge=union
+# Dos workflows agregan líneas a la bitácora (supervisor.yml y reparar-infra.yml):
+# al rebasar se conservan las de los dos. huellas.jsonl solo lo escribe el
+# reconciliador y se reescribe entero: no se une, y un conflicto ahí falla.
+estado/acciones.jsonl merge=union

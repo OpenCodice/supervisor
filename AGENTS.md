@@ -35,10 +35,17 @@ respaldo. El contexto del proyecto está en el `AGENTS.md` de la raíz del espac
 - **Solo biblioteca estándar** en lo que corre cada 15 minutos. PyYAML se usa nada más en
   `lint_workflows.py`, en `compuertas.py` (que solo corre en `reparar-infra.yml`) y en las pruebas.
   `politica.py` no importa `compuertas.py` ni `reparar.py`.
-- **`estado/` solo crece** y lo escriben los workflows. No se edita a mano ni se le hace commit desde una
-  corrida local: para probar, `--estado <otra carpeta>`. `huellas.jsonl` y `latido.json` son solo del
-  reconciliador; `reparar-infra.yml` solo agrega líneas a `acciones.jsonl` (por eso `.gitattributes` une
-  las líneas de los dos al rebasar), y el reconciliador las lee en su vuelta siguiente.
+- **`estado/` lo escriben los workflows.** No se edita a mano ni se le hace commit desde una corrida
+  local: para probar, `--estado <otra carpeta>`. `huellas.jsonl` es una foto (una línea por huella, la
+  vigente) y, como `latido.json`, es solo del reconciliador; `acciones.jsonl` es la bitácora, a la que
+  `reparar-infra.yml` solo agrega líneas (por eso `.gitattributes` une las líneas de los dos al rebasar,
+  y solo en ese archivo). En cada vuelta `Estado.compactar` recorta lo que ya nadie lee: las acciones
+  anteriores a `[estado].conservar_dias` (30), las huellas resueltas que no son la falla de un paso y
+  no dejaron rastro (una cita del horario, una petición: de inmediato) y las demás resueltas pasada la
+  ventana, salvo que la bitácora todavía guarde algo de su reparación. El recorte se aplica al leer y
+  se escribe al guardar, así que una línea vieja que un merge devuelva al archivo no llega a ninguna
+  decisión. `cadenas.validar` no deja que la ventana sea menor que las que la política cuenta en la
+  bitácora. El historial de git conserva todo.
 - Git: se trabaja en `main`, commits en español, sin coautoría de asistentes. `git pull --ff-only`
   antes de editar: el workflow hace push de `estado/` cada vez que algo cambia.
 
@@ -66,7 +73,8 @@ respaldo. El contexto del proyecto está en el `AGENTS.md` de la raíz del espac
   reciente y solo ella (lo atrasado no se acumula), durante `tolerancia_horario_min`; pasada, lo retoma
   la cadencia (`cadencias`). La corrida de una cita es la que hace todo lo de esa cita (no una parcial
   ni una de prueba), creada desde su hora o anterior y todavía en espera. Cada cita es una huella
-  (`horario-<hora>`), así que no se lanza dos veces. Los días van por nombre (`lun`…`dom`): un número
+  (`horario-<hora>`) mientras su corrida no aparece, así que no se lanza dos veces; con la corrida a la
+  vista se resuelve y sale del estado (su lanzamiento queda en la bitácora). Los días van por nombre (`lun`…`dom`): un número
   significa otra cosa en cada cron. Un workflow con `espera_libre` se lanza por horario solo cuando los
   workflows que nombra no tienen corridas vivas ni PR automático abierto, y su cita no caduca hasta la
   siguiente (la ronda de expansión con la cadena de leyes estatales); las rondas que se piden no esperan.

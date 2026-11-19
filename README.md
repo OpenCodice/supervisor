@@ -177,9 +177,12 @@ que `actionlint` no mira:
 
 ## Estado
 
-`estado/` solo crece. De `huellas.jsonl` vale la última línea de cada huella; `acciones.jsonl` es la
-bitácora de lo que el supervisor hizo (y de lo que hizo `reparar-infra.yml` con cada huella); `latido.json` es la última evaluación. Se hace commit solo cuando
-algo cambió (sin novedades, el latido se reescribe una vez al día).
+`huellas.jsonl` es una foto: una línea por huella, la vigente. `acciones.jsonl` es la bitácora de lo
+que el supervisor hizo (y de lo que hizo `reparar-infra.yml` con cada huella); `latido.json` es la
+última evaluación. Se hace commit solo cuando algo cambió (sin novedades, el latido se reescribe una
+vez al día). En cada vuelta se recorta lo que ya nadie lee: las acciones de más de
+`[estado].conservar_dias` (30) y las huellas resueltas (las que no dejaron rastro, de inmediato); el
+historial de git lo conserva.
 
 ## Licencia
 

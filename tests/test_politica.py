@@ -111,7 +111,9 @@ def test_pr_fusionado_tras_revisar_se_da_por_resuelto(foto_sana, mundo):
     r = mundo.vuelta(foto_sana(datos={"leyes-estatales": {"prs": [pr]}}))
     [d] = mundo.de(r, "I5")
     r = mundo.vuelta(foto_sana(), AHORA + timedelta(minutes=45))
-    assert r["estado"].huellas[d.huella]["estado"] == "resuelta"
+    [resuelta] = [x for x in r["decisiones"] if x.huella == d.huella]
+    # Resuelta sin rastro: lo que se hizo queda en la bitácora y la huella sale del estado.
+    assert resuelta.registro["estado"] == "resuelta" and d.huella not in r["estado"].huellas
     assert len(mundo.cliente.llamadas) == 1
 
 
@@ -453,7 +455,8 @@ def test_peticion_se_lanza_una_vez_y_se_resuelve_cuando_empieza_su_corrida(caden
     # Aparece la corrida pedida (basta con que haya empezado): la huella se cierra.
     atendida = corrida(VLE, None, hace_h=-0.1, titulo=titulo(wf, estados="jalisco", origen="supervisor"))
     r = mundo.vuelta(foto_sana((FE, pide), (FE, atendida)), AHORA + timedelta(minutes=30))
-    assert not mundo.de(r, "I12") and r["estado"].huellas[d.huella]["estado"] == "resuelta"
+    [resuelta] = [x for x in r["decisiones"] if x.huella == d.huella]
+    assert not mundo.de(r, "I12") and resuelta.registro["estado"] == "resuelta" and d.huella not in r["estado"].huellas
     assert len(mundo.cliente.lanzamientos()) == 1
 
 
@@ -566,6 +569,36 @@ def test_congreso_cada_hora_no_acumula_lo_atrasado(cadenas, foto_sana, mundo):
     # A las 18:00, la que publica.
     [d] = vuelta(foto_sana((CG, suya)), "2026-11-18T18:01:00Z")
     assert d.accion == "lanzar" and lanzadas()[-1] == {"origen": "supervisor"}
+
+
+def test_las_citas_del_horario_no_se_acumulan_en_el_estado(cadenas, foto_sana, mundo):
+    """Cada cita es una huella mientras su corrida no aparece; con ella a la vista, sale del estado."""
+    import json
+    CG = "congreso-extractor"
+    con = con_horario(cadenas, "actualizar-congreso.yml")
+    wf = con.workflow(CG, "actualizar-congreso.yml")
+    from supervisor.__main__ import correr
+    from supervisor.actuar import Actor
+    from supervisor.estado import Estado
+
+    def vuelta(foto, cuando):
+        estado = Estado(mundo.carpeta)
+        correr(foto, con, estado, cuando, Actor(mundo.cliente, con, "actuar"))
+        estado.guardar()
+        return [json.loads(l) for l in (mundo.carpeta / "huellas.jsonl").read_text().splitlines()]
+
+    corridas = []
+    for hora in range(13, 18):
+        cita = AHORA.replace(hour=hora)
+        [abierta] = vuelta(foto_sana(*corridas), cita + timedelta(minutes=1))
+        assert (abierta["invariante"], abierta["estado"], abierta["lanzamientos"]) == ("I1", "abierta", 1)
+        suya = _en(corrida(wf.archivo, "success", titulo=titulo(wf, publicar="no", origen="supervisor"),
+                           jobs=[job("actualizar"), job("estado pendiente=[false]")]), iso(cita + timedelta(minutes=2)))
+        corridas.append((CG, suya))
+        assert vuelta(foto_sana(*corridas), cita + timedelta(minutes=16)) == []
+    # Lo que se lanzó sigue en la bitácora: de ahí sale que la misma cita no se repita ni cuente para el cortacircuitos.
+    acciones = Estado(mundo.carpeta).acciones
+    assert len(acciones) == 5 and all(a["detalle"].get("horario") for a in acciones)
 
 
 def test_lo_lanzado_por_horario_no_abre_el_cortacircuitos(cadenas, foto_sana, mundo):
@@ -893,11 +926,13 @@ def test_i13_constancia_recordatorio_semanal_y_cierre_al_renovar(cadenas, foto_s
     assert "gh secret set SUPERVISOR_TOKEN -R OpenCodice/supervisor" in abierto["body"] and "faltan 20 días" in abierto["body"]
     assert "Issues" in abierto["body"] and "no es una asignación" in abierto["body"]
 
-    # La misma foto, y las de los días siguientes, no repiten el aviso ni escriben estado.
+    # La misma foto, y las de los días siguientes, no repiten el aviso ni cambian su huella.
+    anotada = r["estado"].huellas[d.huella]
     r = mundo.vuelta(_vence(foto_sana(), vence), AHORA + timedelta(minutes=15))
-    assert mundo.de(r, "I13")[0].accion == "nada" and _issues(mundo) == (1, 0, 0) and not r["estado"]._huellas_nuevas
+    assert mundo.de(r, "I13")[0].accion == "nada" and _issues(mundo) == (1, 0, 0)
+    assert r["estado"].huellas[d.huella] == anotada
     r = mundo.vuelta(_vence(foto_sana(), vence), AHORA + timedelta(days=6, hours=23))
-    assert _issues(mundo) == (1, 0, 0) and not r["estado"]._huellas_nuevas
+    assert _issues(mundo) == (1, 0, 0) and r["estado"].huellas[d.huella] == anotada
 
     # A la semana, un recordatorio en el mismo issue, con los días que quedan.
     r = mundo.vuelta(_vence(foto_sana(), vence), AHORA + timedelta(days=7))

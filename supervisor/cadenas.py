@@ -69,6 +69,12 @@ class Cadenas:
     reparacion: dict = field(default_factory=dict)
     workers: tuple[dict, ...] = ()
     credenciales: tuple[dict, ...] = ()
+    estado: dict = field(default_factory=dict)
+
+    @property
+    def conservar_dias(self) -> float:
+        """Días que se conservan en `estado/` las acciones y las huellas resueltas."""
+        return self.estado.get("conservar_dias", 30)
 
     @property
     def org(self) -> str:
@@ -143,6 +149,7 @@ def cargar(ruta: str | Path | None = None) -> Cadenas:
         reparacion=crudo.get("reparacion", {}),
         workers=tuple(crudo.get("workers", [])),
         credenciales=tuple(crudo.get("credenciales", [])),
+        estado=crudo.get("estado", {}),
     )
     validar(cadenas)
     return cadenas
@@ -207,6 +214,14 @@ def validar(c: Cadenas) -> None:
                 raise ValueError("cadenas.toml: el supervisor no se repara a sí mismo")
             if any(r["nombre"] == d["repo"] for d in c.datos):
                 raise ValueError(f"cadenas.toml: {r['nombre']} es un repo de datos: el agente no lo toca")
+    # Lo que la política cuenta en la bitácora tiene que seguir ahí cuando lo cuenta.
+    ventanas = {"[politica].intentos_agente_caducan_dias": c.politica.get("intentos_agente_caducan_dias", 28),
+                "[politica].rechazo_vigente_h": c.politica.get("rechazo_vigente_h", 192) / 24,
+                "[general].dias_foto": c.general.get("dias_foto", 9)}
+    for nombre, dias in ventanas.items():
+        if c.conservar_dias < dias:
+            raise ValueError(f"cadenas.toml: [estado].conservar_dias ({c.conservar_dias}) es menor que {nombre}: "
+                             f"la bitácora se recortaría antes de que la política termine de leerla")
     for worker in c.workers:
         for clave in ("nombre", "salud", "token_env"):
             if not worker.get(clave):

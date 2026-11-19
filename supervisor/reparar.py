@@ -128,6 +128,14 @@ def anotar(raiz: Path, linea: dict, remoto: str | None = "origin", dormir=None) 
     return subir(raiz, remoto, dormir=dormir)
 
 
+def leer_estado(carpeta: Path | str, cadenas: _cadenas.Cadenas, ahora: datetime | None = None) -> Estado:
+    """El estado como lo ve el reconciliador: sin lo que ya salió de su ventana. Solo para leer;
+    lo que reparar-infra escribe es una línea más en la bitácora (`anotar`)."""
+    estado = Estado(carpeta)
+    estado.compactar(ahora or _ahora(), cadenas.conservar_dias)
+    return estado
+
+
 def eventos(acciones: list[dict], huella: str) -> list[dict]:
     return [a for a in acciones if a.get("huella") == huella and a.get("accion") in politica.EVENTOS | {"intento-iniciado"}]
 
@@ -307,7 +315,7 @@ def armar_brief(plantilla: str, reg: dict, cadenas: _cadenas.Cadenas, *, rutas: 
 def preparar(args, cadenas: _cadenas.Cadenas, cliente: Cliente, ahora: datetime) -> int:
     salida = Path(args.salida)
     salida.mkdir(parents=True, exist_ok=True)
-    estado = Estado(args.estado)
+    estado = leer_estado(args.estado, cadenas, ahora)
     ensayo = {k: getattr(args, k) for k in ("repo", "workflow", "job", "paso", "corrida")} if args.ensayo else None
     reg = registro_de(estado, args.huella, ensayo)
     comprobar_registro(reg, cadenas)
@@ -685,7 +693,8 @@ def publicar(args, cadenas: _cadenas.Cadenas, ahora: datetime) -> int:
             else:
                 publicado = _ahora()
                 try:
-                    prueba = relanzar_prueba(Cliente(token), cadenas, reg, Estado(raiz / "estado").acciones, publicado)
+                    prueba = relanzar_prueba(Cliente(token), cadenas, reg, leer_estado(raiz / "estado", cadenas, publicado).acciones,
+                                             publicado)
                 except ErrorApi as e:
                     prueba = {"lanzada": False, "motivo": f"no se pudo lanzar: HTTP {e.estado}"}
                 prueba["vence"] = iso(publicado + timedelta(hours=cadenas.reparacion.get("prueba_max_h", 12)))
@@ -731,7 +740,7 @@ def publicar(args, cadenas: _cadenas.Cadenas, ahora: datetime) -> int:
 
 def revertir(args, cadenas: _cadenas.Cadenas) -> int:
     raiz = Path(args.supervisor)
-    estado = Estado(raiz / "estado")
+    estado = leer_estado(raiz / "estado", cadenas)
     reg = registro_de(estado, args.huella)
     vigente = arreglo_vigente(estado.acciones, args.huella)
     # Solo se revierte un commit que este mismo workflow publicó para esta huella.

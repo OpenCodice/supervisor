@@ -15,6 +15,14 @@ lineas_log = 40
 # si hay más, los más viejos esperan a la vuelta siguiente.
 max_cadenas_por_vuelta = 60
 
+[estado]
+# Días que se conservan en estado/acciones.jsonl las acciones y en
+# estado/huellas.jsonl las huellas resueltas que dejaron rastro (un issue, una
+# reparación). Lo anterior se recorta en cada vuelta; el historial de git lo
+# guarda. No puede ser menor que las ventanas que la política cuenta en la
+# bitácora (intentos_agente_caducan_dias, rechazo_vigente_h, dias_foto).
+conservar_dias = 30
+
 [invariantes]
 I1 = true    # cadencia
 I2 = true    # toda falla tiene dueño

@@ -26,6 +26,7 @@ from .politica import EJECUTABLES, Decision, aplicar, decidir
 
 def correr(foto: dict, cadenas: _cadenas.Cadenas, estado: Estado, ahora: datetime, actor: Actor) -> dict:
     """Una vuelta: invariantes → política → acciones → estado. Devuelve lo que pasó."""
+    estado.compactar(ahora, cadenas.conservar_dias)
     hallazgos = evaluar(foto, cadenas, ahora)
     decisiones = decidir(hallazgos, estado.huellas, estado.acciones, foto, cadenas, ahora)
     for d in decisiones:
@@ -39,6 +40,9 @@ def correr(foto: dict, cadenas: _cadenas.Cadenas, estado: Estado, ahora: datetim
                 registro = aplicar(registro, {"ultima_accion": iso(ahora), "+errores": 1})
         if registro is not None:
             estado.anotar_huella(registro)
+
+    # Lo que esta vuelta resolvió sin dejar rastro no llega al disco.
+    estado.compactar(ahora, cadenas.conservar_dias)
 
     rotas: dict[str, int] = {}
     for d in decisiones:
