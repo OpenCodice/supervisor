@@ -28,7 +28,7 @@ def correr(foto: dict, cadenas: _cadenas.Cadenas, estado: Estado, ahora: datetim
     """Una vuelta: invariantes → política → acciones → estado. Devuelve lo que pasó."""
     estado.compactar(ahora, cadenas.conservar_dias)
     hallazgos = evaluar(foto, cadenas, ahora)
-    decisiones = decidir(hallazgos, estado.huella, estado.acciones, foto, cadenas, ahora)
+    decisiones = decidir(hallazgos, estado.huellas, estado.acciones, foto, cadenas, ahora)
     for d in decisiones:
         linea = actor.ejecutar(d, ahora)
         registro = d.registro
