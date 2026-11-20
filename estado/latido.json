@@ -1,11 +1,11 @@
 {
   "acciones": {
-    "lanzar": 1
+    "desplegar-web": 1
   },
-  "cuando": "2026-11-20T16:00:27Z",
+  "cuando": "2026-11-20T16:15:28Z",
   "huellas_abiertas": 1,
   "invariantes": {
-    "I1": "rota:1",
+    "I1": "ok",
     "I10": "ok",
     "I11": "ok",
     "I12": "ok",
@@ -16,7 +16,7 @@
     "I5": "ok",
     "I6": "ok",
     "I7": "apagada",
-    "I8": "ok",
+    "I8": "rota:1",
     "I9": "ok"
   },
   "modo": "actuar",
