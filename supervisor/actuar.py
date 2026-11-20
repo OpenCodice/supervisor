@@ -192,6 +192,11 @@ class Actor:
 
     def cerrar_constancia(self, numero: int, motivo: str) -> None:
         self.cliente.post(f"repos/{self.repo_propio}/issues/{numero}/comments", {"body": motivo})
+        try:
+            # Cerrado ya no lo tiene nadie: se le quita la etiqueta de estado.
+            self.cliente.patch(f"repos/{self.repo_propio}/issues/{numero}", {"labels": [ETIQUETA]})
+        except ErrorApi:
+            pass
         self.cliente.patch(f"repos/{self.repo_propio}/issues/{numero}", {"state": "closed"})
 
     # ---- Entrada ----

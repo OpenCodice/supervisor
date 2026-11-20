@@ -68,3 +68,10 @@ def test_el_issue_dice_en_que_va_y_solo_se_reescribe_cuando_cambia(cadenas, foto
     # Otra vuelta igual no lo toca: el «Desde» sigue siendo el de cuando cambió.
     mundo.vuelta(foto_sana(*base), minutos(45))
     assert mundo.cliente.cuerpos[ruta] == cuerpo and cuerpo.count("<!-- estado -->") == 1
+
+
+def test_al_cerrarse_el_issue_pierde_su_etiqueta_de_estado(cadenas):
+    from supervisor.actuar import Actor
+    cliente = ClienteFalso()
+    Actor(cliente, cadenas, "actuar").cerrar_constancia(5, "Resuelta: ya no aparece")
+    assert [c for m, r, c in cliente.llamadas if m == "PATCH"] == [{"labels": [ETIQUETA]}, {"state": "closed"}]
