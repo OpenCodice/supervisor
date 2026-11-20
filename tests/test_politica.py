@@ -52,6 +52,7 @@ def test_exit_127_reintento_y_despues_agente(cadenas, foto_sana, real, mundo):
     r = mundo.vuelta(foto_sana((FE, primera), (FE, segunda), (FE, buena)), instante("2026-11-18T09:40:00Z"))
     assert r["estado"].huellas[d.huella]["estado"] == "resuelta"
     assert ("PATCH", "repos/OpenCodice/supervisor/issues/1", {"state": "closed"}) in mundo.cliente.llamadas
+    assert ("POST", "repos/OpenCodice/supervisor/issues/1/comments", {"body": "Resuelta: ya no aparece"}) in mundo.cliente.llamadas
 
 
 # (b) cancelada en espera: se lanza la unión de lo que se perdió; si la que la reemplazó lo abarca, nada.

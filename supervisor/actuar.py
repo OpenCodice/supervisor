@@ -206,7 +206,7 @@ class Actor:
         if d.accion not in EJECUTABLES:
             if self.modo == "actuar" and d.detalle.get("issue") and (d.registro or {}).get("estado") == "resuelta":
                 try:
-                    self.cerrar_constancia(d.detalle["issue"], f"Resuelta: {d.motivo}")
+                    self.cerrar_constancia(d.detalle["issue"], d.motivo[:1].upper() + d.motivo[1:])
                 except ErrorApi:
                     pass
             return None
