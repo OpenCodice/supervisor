@@ -41,7 +41,12 @@ jobs:
       ACTUA: ${{ secrets.SUPERVISOR_TOKEN != '' }}
       MODO: ${{ vars.SUPERVISOR_MODO }}
     steps:
+      # La punta de main al empezar, no el sha del evento: una vuelta que esperó en
+      # el grupo de concurrency trae el sha de cuando se creó y leería el estado
+      # de antes de la vuelta que la precedió.
       - uses: actions/checkout@v5
+        with:
+          ref: main
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
