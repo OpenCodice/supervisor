@@ -1,9 +1,9 @@
 {
   "acciones": {},
-  "cuando": "2026-11-23T12:15:27Z",
-  "huellas_abiertas": 0,
+  "cuando": "2026-11-23T12:30:27Z",
+  "huellas_abiertas": 1,
   "invariantes": {
-    "I1": "ok",
+    "I1": "rota:1",
     "I10": "ok",
     "I11": "ok",
     "I12": "ok",
