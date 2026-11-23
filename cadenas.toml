@@ -521,7 +521,7 @@ nombre = "SUPERVISOR_TOKEN"
 uso = "github"
 presente_env = "ACTUA"
 que = "PAT fine-grained `opencodice-supervisor`, secret del repo `supervisor`. Con él el supervisor observa la organización, lanza y cancela corridas, cierra un PR automático atorado y escribe estos issues."
-necesita = "Dueño del recurso: la organización OpenCodice, con acceso a todos sus repositorios (también los privados: las dos webs). Permisos de repositorio, todos de lectura y escritura: Actions, Contents, Workflows, Pull requests e Issues."
+necesita = "Dueño del recurso: la organización OpenCodice, con acceso a todos sus repositorios. Permisos de repositorio, todos de lectura y escritura: Actions, Contents, Workflows, Pull requests e Issues."
 guardar = "gh secret set SUPERVISOR_TOKEN -R OpenCodice/supervisor"
 
 [[credenciales]]
