@@ -323,6 +323,25 @@ compuertas = [
   { paso = "Compuertas del arreglo" },
 ]
 
+# El histórico: la primera vuelta va tanda tras tanda (I6) hasta intentar todos
+# los documentos declarados; después, la cita semanal revisa los que llevan
+# más tiempo sin mirarse.
+[[workflows]]
+repo = "historico-extractor"
+archivo = "reconstruir.yml"
+grupo = "reconstruir"
+inputs = ["claves", "lote", "desde_cero", "origen"]
+inputs_lista = ["claves"]
+inputs_ignorados = ["lote", "origen"]
+inputs_manuales = ["desde_cero"]
+omision = { lote = "6", desde_cero = "no" }
+relanzar_sin_inputs = true
+encadenado = true
+cadencias = [{ ventana_h = 192 }]
+horario = [{ dias = ["dom"], hora = "09:00" }]
+lanza_horario = true
+max_min = 345
+
 [[workflows]]
 repo = "fiscal-extractor"
 archivo = "impacto.yml"
@@ -462,6 +481,8 @@ nombre = "constitucion-extractor"
 nombre = "fiscal-extractor"
 [[repos]]
 nombre = "congreso-extractor"
+[[repos]]
+nombre = "historico-extractor"
 [[repos]]
 nombre = "constitucion-web"
 [[repos]]
