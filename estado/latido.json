@@ -1,23 +1,31 @@
 {
-  "acciones": {},
-  "cuando": "2026-11-23T11:15:28Z",
-  "huellas_abiertas": 0,
+  "acciones": {
+    "lanzar": 1
+  },
+  "cuando": "2026-11-23T12:00:27Z",
+  "huellas_abiertas": 1,
   "invariantes": {
-    "I1": "ok",
+    "I1": "rota:1",
     "I10": "ok",
-    "I11": "ok",
+    "I11": "sin-observar",
     "I12": "ok",
     "I13": "ok",
     "I2": "ok",
     "I3": "ok",
-    "I4": "ok",
+    "I4": "sin-observar",
     "I5": "ok",
     "I6": "ok",
     "I7": "apagada",
     "I8": "ok",
-    "I9": "ok"
+    "I9": "sin-observar"
   },
   "modo": "actuar",
-  "motivos": {},
-  "sin_observar": []
+  "motivos": {
+    "I11": "supervisor: HTTP 502",
+    "I4": "supervisor: HTTP 502",
+    "I9": "supervisor: HTTP 502"
+  },
+  "sin_observar": [
+    "supervisor"
+  ]
 }
