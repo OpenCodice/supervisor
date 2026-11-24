@@ -94,7 +94,7 @@ agente() {
       --max-turns "${AGENTE_MAX_TURNOS:-100}" \
       --permission-mode acceptEdits \
       --allowedTools Bash Read Edit Write Glob Grep \
-      ${AGENTE_MODELO:+--model "$AGENTE_MODELO"} \
+      --model "${AGENTE_MODELO:-claude-opus-5-5}" \
       --output-format json \
     || echo "::warning::El agente de infraestructura terminó con error o agotó su tiempo."
 }
@@ -118,7 +118,7 @@ juez() {
   claude_acotado "${AGENTE_MINUTOS:-20}" -p "$(cat "$INFRA/entrada/brief-juez.md")" \
       --max-turns "${AGENTE_MAX_TURNOS:-40}" \
       --allowedTools Read Glob Grep Bash \
-      ${AGENTE_MODELO:+--model "$AGENTE_MODELO"} \
+      --model "${AGENTE_MODELO:-claude-sonnet-5-5}" \
       --output-format json \
     || echo "::warning::El juez terminó con error o agotó su tiempo." >&2
 }
