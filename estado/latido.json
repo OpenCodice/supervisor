@@ -1,23 +1,36 @@
 {
-  "acciones": {},
-  "cuando": "2026-11-24T22:15:35Z",
-  "huellas_abiertas": 0,
+  "acciones": {
+    "agotada": 1
+  },
+  "cuando": "2026-11-24T22:45:27Z",
+  "huellas_abiertas": 1,
   "invariantes": {
-    "I1": "ok",
+    "I1": "sin-observar",
     "I10": "ok",
-    "I11": "ok",
-    "I12": "ok",
-    "I13": "ok",
-    "I2": "ok",
-    "I3": "ok",
-    "I4": "ok",
+    "I11": "sin-observar",
+    "I12": "sin-observar",
+    "I13": "rota:1",
+    "I2": "sin-observar",
+    "I3": "sin-observar",
+    "I4": "sin-observar",
     "I5": "ok",
-    "I6": "ok",
+    "I6": "sin-observar",
     "I7": "apagada",
     "I8": "ok",
     "I9": "ok"
   },
   "modo": "actuar",
-  "motivos": {},
-  "sin_observar": []
+  "motivos": {
+    "I1": "fiscal-extractor: HTTP 401; historico-extractor: HTTP 401",
+    "I11": "fiscal-extractor: HTTP 401; historico-extractor: HTTP 401",
+    "I12": "fiscal-extractor: HTTP 401; historico-extractor: HTTP 401",
+    "I2": "fiscal-extractor: HTTP 401; historico-extractor: HTTP 401",
+    "I3": "fiscal-extractor: HTTP 401; historico-extractor: HTTP 401",
+    "I4": "fiscal-extractor: HTTP 401; historico-extractor: HTTP 401",
+    "I6": "fiscal-extractor: HTTP 401; historico-extractor: HTTP 401"
+  },
+  "sin_observar": [
+    "fiscal-extractor",
+    "historico-extractor"
+  ]
 }
