@@ -334,7 +334,7 @@ inputs = ["claves", "lote", "desde_cero", "origen"]
 inputs_lista = ["claves"]
 inputs_ignorados = ["lote", "origen"]
 inputs_manuales = ["desde_cero"]
-omision = { lote = "6", desde_cero = "no" }
+omision = { lote = "40", desde_cero = "no" }
 relanzar_sin_inputs = true
 encadenado = true
 cadencias = [{ ventana_h = 192 }]
