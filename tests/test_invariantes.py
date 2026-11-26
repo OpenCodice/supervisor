@@ -417,7 +417,7 @@ def test_i8_mira_todos_los_repos_de_datos_y_no_insiste_tras_un_despliegue_fallid
     [h] = _solo(inv.evaluar(foto, cadenas, AHORA), "I8")
     assert "congreso-mexicano" in h.motivo and h.inputs == {} and h.en_vuelo is None
     assert {d["repo"] for d in cadenas.datos} == {"constitucion-mexicana", "leyes-estatales", "fiscal-mexicano",
-                                                 "leyes-federales", "congreso-mexicano"}
+                                                 "leyes-federales", "congreso-mexicano", "historico"}
     # Con un despliegue en curso posterior, ya hay quien la resuelva.
     foto["repos"][W]["corridas"].append(corrida("deploy.yml", None, hace_h=0.05))
     assert _solo(inv.evaluar(foto, cadenas, AHORA), "I8")[0].en_vuelo

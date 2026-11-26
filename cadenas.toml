@@ -471,6 +471,11 @@ prs = [
   { etiqueta = "verificado", rama = '^datos/', vigilancia = { repo = "congreso-extractor", archivo = "actualizar-congreso.yml", inputs = { publicar = "si" } }, revisor = { repo = "congreso-extractor", archivo = "revisar-pr.yml" } },
 ]
 
+# Sin PR: las tandas de historico-extractor publican directo en sus ramas, y
+# `main` avanza con el índice cada vez que una rama gana o pierde versiones.
+[[datos]]
+repo = "historico"
+
 # ---------------------------------------------------------------------------
 # Otros repos con workflows: solo I11 (rojo crónico).
 # ---------------------------------------------------------------------------

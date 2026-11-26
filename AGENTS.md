@@ -97,7 +97,7 @@ respaldo. El contexto del proyecto está en el `AGENTS.md` de la raíz del espac
   abarca. No se lanza mientras el PR automático de esa cadena siga abierto; si no se fusiona, lo
   resuelve I5.
 - **La web (I8).** `deploy.yml` (workflow_dispatch) cuando `main` de algún repo de datos (`[[datos]]`,
-  también `congreso-mexicano`) es posterior al inicio del último despliegue exitoso, pasado
+  también `congreso-mexicano` e `historico`, cuyo `main` avanza con su índice de ramas) es posterior al inicio del último despliegue exitoso, pasado
   `web_margen_min`. Si un despliegue posterior a ese commit falla, I8 ya no insiste: la falla tiene
   dueño (I2).
 - **I7** (extractor nuevo ⇒ vigilancia) queda apagada: quien publica un arreglo del extractor pide su
