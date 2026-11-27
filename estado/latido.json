@@ -1,11 +1,11 @@
 {
   "acciones": {
-    "agotada": 1
+    "lanzar": 1
   },
-  "cuando": "2026-11-27T21:45:26Z",
-  "huellas_abiertas": 2,
+  "cuando": "2026-11-27T22:00:27Z",
+  "huellas_abiertas": 3,
   "invariantes": {
-    "I1": "ok",
+    "I1": "rota:1",
     "I10": "ok",
     "I11": "ok",
     "I12": "ok",
@@ -13,16 +13,13 @@
     "I2": "rota:2",
     "I3": "ok",
     "I4": "ok",
-    "I5": "sin-observar",
+    "I5": "ok",
     "I6": "ok",
     "I7": "apagada",
-    "I8": "sin-observar",
+    "I8": "ok",
     "I9": "ok"
   },
   "modo": "actuar",
-  "motivos": {
-    "I5": "fiscal-mexicano: HTTP 502",
-    "I8": "fiscal-mexicano: HTTP 502"
-  },
+  "motivos": {},
   "sin_observar": []
 }
