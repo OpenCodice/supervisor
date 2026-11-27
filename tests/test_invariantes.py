@@ -117,22 +117,22 @@ CREDENCIALES = {"credenciales": "11-23T08:00"}
     ("2026-11-22T09:07:00Z", {"actualizar-congreso": "11-22T09:00"}),
     ("2026-11-24T09:07:00Z", {"actualizar-congreso": "11-24T09:00"}),
     # Las credenciales, los lunes a las 08:00, antes de las vigilancias.
-    ("2026-11-23T07:59:00Z", {"actualizar-congreso": "11-23T07:00"}),
-    ("2026-11-23T08:59:00Z", {"actualizar-congreso": "11-23T08:00"} | CREDENCIALES),
+    ("2026-11-23T07:59:00Z", {"actualizar-congreso": "11-23T07:30"}),
+    ("2026-11-23T08:59:00Z", {"actualizar-congreso": "11-23T08:30"} | CREDENCIALES),
     ("2026-11-23T09:00:00Z", LUNES_9 | {"actualizar-congreso": "11-23T09:00"} | CREDENCIALES),
     # El tic puede llegar tarde o faltar: vale el primero dentro de la tolerancia (180 min).
-    ("2026-11-23T09:47:00Z", LUNES_9 | {"actualizar-congreso": "11-23T09:00"} | CREDENCIALES),
+    ("2026-11-23T09:47:00Z", LUNES_9 | {"actualizar-congreso": "11-23T09:30"} | CREDENCIALES),
     ("2026-11-23T12:00:00Z", LUNES_9 | {"actualizar-congreso": "11-23T12:00"}),
     ("2026-11-23T12:01:00Z", {"actualizar-congreso": "11-23T12:00"}),
     ("2026-11-23T13:02:00Z", LUNES_13 | {"actualizar-congreso": "11-23T13:00"}),
     ("2026-11-23T16:01:00Z", {"actualizar-congreso": "11-23T16:00"}),
     # Congreso: cada hora en el minuto 0 «solo pedir», y a las 18:00 la que publica.
-    ("2026-11-23T17:59:00Z", {"actualizar-congreso": "11-23T17:00"}),
+    ("2026-11-23T17:59:00Z", {"actualizar-congreso": "11-23T17:30"}),
     ("2026-11-23T18:14:00Z", {"actualizar-congreso": "11-23T18:00"}),
     ("2026-11-23T19:00:00Z", {"actualizar-congreso": "11-23T19:00"}),
     # La ronda, los miércoles a las 15:30.
     ("2026-11-25T15:29:00Z", {"actualizar-congreso": "11-25T15:00"}),
-    ("2026-11-25T15:31:00Z", {"actualizar-congreso": "11-25T15:00", "expandir-estatales": "11-25T15:30"}),
+    ("2026-11-25T15:31:00Z", {"actualizar-congreso": "11-25T15:30", "expandir-estatales": "11-25T15:30"}),
     ("2026-12-01T10:10:00Z", {"actualizar-congreso": "12-01T10:00"}),
 ])
 def test_tabla_de_horarios(cadenas, foto_sana, cuando, toca):

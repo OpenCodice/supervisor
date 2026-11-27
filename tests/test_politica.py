@@ -561,7 +561,7 @@ def test_congreso_cada_hora_no_acumula_lo_atrasado(cadenas, foto_sana, mundo):
     assert d.accion == "esperar" and len(lanzadas()) == 1
     # Con su corrida a la vista ya no hay nada que hacer.
     suya = _en(corrida(wf.archivo, None, titulo=titulo(wf, publicar="no", origen="supervisor")), "2026-11-18T15:07:05Z")
-    assert vuelta(foto_sana((CG, suya)), "2026-11-18T15:37:00Z") == []
+    assert vuelta(foto_sana((CG, suya)), "2026-11-18T15:28:00Z") == []
     # A la hora siguiente toca otra; si la anterior sigue esperando su turno, no se le forma otra detrás.
     en_espera = suya | {"status": "pending"}
     assert vuelta(foto_sana((CG, en_espera)), "2026-11-18T16:07:00Z") == []

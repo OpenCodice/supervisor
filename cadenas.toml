@@ -372,6 +372,9 @@ cadencias = [
 horario = [
   { dias = ["*"], hora = "*:00", inputs = { publicar = "no" } },
   { dias = ["*"], hora = "18:00", inputs = { publicar = "si" } },
+  # La LXV Legislatura (2021-2024) se baja al archivo por capas, detrás de la
+  # que está en curso: cada corrida pide las páginas que la anterior descubrió.
+  { dias = ["*"], hora = "*:30", inputs = { legislatura = "65", publicar = "no" } },
 ]
 lanza_horario = true
 max_min = 150

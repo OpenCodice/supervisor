@@ -39,7 +39,8 @@ def test_el_supervisor_lanza_todo_lo_que_tiene_horario():
         "expandir-estatales.yml": [{"dias": ["mie"], "hora": "15:30"}],
         "reconstruir.yml": [{"dias": ["dom"], "hora": "09:00"}],
         "actualizar-congreso.yml": [{"dias": ["*"], "hora": "*:00", "inputs": {"publicar": "no"}},
-                                    {"dias": ["*"], "hora": "18:00", "inputs": {"publicar": "si"}}],
+                                    {"dias": ["*"], "hora": "18:00", "inputs": {"publicar": "si"}},
+                                    {"dias": ["*"], "hora": "*:30", "inputs": {"legislatura": "65", "publicar": "no"}}],
         "credenciales.yml": lunes("08:00"),
     }
     # Semanal, con una ventana que deja pasar una cita y no dos.
