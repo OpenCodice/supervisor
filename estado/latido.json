@@ -1,8 +1,8 @@
 {
   "acciones": {
-    "agente": 1
+    "agotada": 1
   },
-  "cuando": "2026-11-27T03:30:26Z",
+  "cuando": "2026-11-27T03:45:25Z",
   "huellas_abiertas": 2,
   "invariantes": {
     "I1": "ok",
