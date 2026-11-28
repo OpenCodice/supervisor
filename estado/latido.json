@@ -1,11 +1,11 @@
 {
   "acciones": {
-    "agotada": 1
+    "lanzar": 1
   },
-  "cuando": "2026-11-28T03:45:26Z",
-  "huellas_abiertas": 2,
+  "cuando": "2026-11-28T04:00:29Z",
+  "huellas_abiertas": 3,
   "invariantes": {
-    "I1": "ok",
+    "I1": "rota:1",
     "I10": "ok",
     "I11": "ok",
     "I12": "ok",
